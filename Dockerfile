@@ -1,6 +1,6 @@
 FROM python:3.13-slim
 
-# Системные зависимости
+# Системные зависимости + Node.js для Claude CLI
 RUN apt-get update && apt-get install -y --no-install-recommends \
   gcc \
   libc6-dev \
@@ -8,7 +8,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   cron \
   dos2unix \
   tzdata \
-  less
+  less \
+  curl && \
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+  apt-get install -y --no-install-recommends nodejs
+
+# Claude CLI (используется для AI-ответов через подписку)
+RUN npm install -g @anthropic-ai/claude-code
 
 # Настройка пользователя
 ARG UID=1000

@@ -81,6 +81,8 @@ class Namespace(BaseNamespace):
     per_page: int
     total_pages: int
     excluded_filter: str | None
+    excluded_name_filter: str | None
+    excluded_description_filter: str | None
     max_responses: int
     send_email: bool
     skip_tests: bool
@@ -169,6 +171,16 @@ class Operation(BaseOperation):
             "--excluded-filter",
             type=str,
             help=r"Исключить вакансии, если название или описание не соответствует шаблону. Например, `--excluded-filter 'junior|стажир|bitrix|дружн\w+ коллектив|полиграф|open\s*space|опенспейс|хакатон|конкурс|тестов\w+ задан'`",
+        )
+        parser.add_argument(
+            "--excluded-name-filter",
+            type=str,
+            help=r"Исключить вакансии по названию (regex). Применяется только к имени вакансии.",
+        )
+        parser.add_argument(
+            "--excluded-description-filter",
+            type=str,
+            help=r"Исключить вакансии по описанию (regex). Применяется к сниппету и полному описанию.",
         )
         parser.add_argument(
             "--max-responses",
@@ -326,6 +338,30 @@ class Operation(BaseOperation):
         self.employment = args.employment
         self.excluded_employer_id = args.excluded_employer_id
         self.excluded_filter = args.excluded_filter
+        self.excluded_name_filter = args.excluded_name_filter
+        self.excluded_description_filter = (
+            args.excluded_description_filter
+        )
+
+        # Предкомпилируем регулярные выражения
+        self._excluded_pat = (
+            re.compile(self.excluded_filter, re.IGNORECASE)
+            if self.excluded_filter
+            else None
+        )
+        self._excluded_name_pat = (
+            re.compile(self.excluded_name_filter, re.IGNORECASE)
+            if self.excluded_name_filter
+            else None
+        )
+        self._excluded_desc_pat = (
+            re.compile(
+                self.excluded_description_filter, re.IGNORECASE
+            )
+            if self.excluded_description_filter
+            else None
+        )
+
         self.experience = args.experience
         self.force_message = args.force_message
         self.industry = args.industry
@@ -1421,33 +1457,12 @@ class Operation(BaseOperation):
             if page >= res["pages"] - 1:
                 return
 
-    def _is_excluded(self, vacancy: SearchVacancy) -> bool:
-        if not self.excluded_filter:
-            return False
-
-        snippet = vacancy.get("snippet", {})
-        vacancy_summary = " ".join(
-            filter(
-                None,
-                [
-                    vacancy.get("name"),
-                    snippet.get("requirement"),
-                    snippet.get("responsibility"),
-                ],
-            )
+    def _fetch_full_description(
+        self, vacancy: SearchVacancy
+    ) -> str:
+        r = self.tool.session.get(
+            "https://hh.ru/vacancy/" + vacancy["id"]
         )
-
-        logger.debug(vacancy_summary)
-
-        excluded_pat: re.Pattern = re.compile(
-            self.excluded_filter, re.IGNORECASE
-        )
-
-        if excluded_pat.search(vacancy_summary):
-            return True
-
-        # Грузим полный текст вакансии только, если предыдущий фильтр не сработал
-        r = self.tool.session.get("https://hh.ru/vacancy/" + vacancy["id"])
         r.raise_for_status()
 
         description, _ = self.json_decoder.raw_decode(
@@ -1455,7 +1470,55 @@ class Operation(BaseOperation):
         )
         description = strip_tags(description)
         logger.debug(description[:2047])
-        return bool(excluded_pat.search(description))
+        return description
+
+    def _is_excluded(self, vacancy: SearchVacancy) -> bool:
+        if not (
+            self._excluded_pat
+            or self._excluded_name_pat
+            or self._excluded_desc_pat
+        ):
+            return False
+
+        name = vacancy.get("name") or ""
+
+        # 1. Фильтр только по названию вакансии
+        if self._excluded_name_pat:
+            if self._excluded_name_pat.search(name):
+                return True
+
+        snippet = vacancy.get("snippet", {})
+        snippet_text = " ".join(
+            filter(
+                None,
+                [
+                    snippet.get("requirement"),
+                    snippet.get("responsibility"),
+                ],
+            )
+        )
+
+        # 2. Фильтр только по описанию (сниппет + полное)
+        if self._excluded_desc_pat:
+            if self._excluded_desc_pat.search(snippet_text):
+                return True
+            full_desc = self._fetch_full_description(vacancy)
+            if self._excluded_desc_pat.search(full_desc):
+                return True
+
+        # 3. Общий фильтр (название + описание, обратная совместимость)
+        if self._excluded_pat:
+            vacancy_summary = " ".join(
+                filter(None, [name, snippet_text])
+            )
+            logger.debug(vacancy_summary)
+            if self._excluded_pat.search(vacancy_summary):
+                return True
+            full_desc = self._fetch_full_description(vacancy)
+            if self._excluded_pat.search(full_desc):
+                return True
+
+        return False
 
     def _is_vacancy_already_skipped(
         self, vacancy: SearchVacancy, resume_id: str | None = None

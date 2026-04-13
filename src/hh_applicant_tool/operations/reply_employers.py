@@ -3,17 +3,18 @@ from __future__ import annotations
 import argparse
 import logging
 import random
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 from ..ai.base import AIError
 from ..api import ApiError, datatypes
+from ..forms.filler import FormFiller
 from ..main import BaseNamespace, BaseOperation
 from ..utils.date import parse_api_datetime
 from ..utils.string import rand_text
 
 if TYPE_CHECKING:
-    from ..ai.openai import ChatOpenAI
     from ..main import HHApplicantTool
 
 
@@ -36,6 +37,8 @@ class Namespace(BaseNamespace):
     only_invitations: bool
     dry_run: bool
     use_ai: bool
+    use_claude: bool
+    fill_forms: bool
     system_prompt: str
     message_prompt: str
     period: int
@@ -83,10 +86,22 @@ class Operation(BaseOperation):
             default=False,
             action=argparse.BooleanOptionalAction,
         )
-        parser.add_argument(
+        ai_group = parser.add_mutually_exclusive_group()
+        ai_group.add_argument(
             "--use-ai",
             "--ai",
-            help="Использовать AI для автоматической генерации ответов",
+            help="Использовать OpenAI для автоматической генерации ответов",
+            action=argparse.BooleanOptionalAction,
+        )
+        ai_group.add_argument(
+            "--use-claude",
+            help="Использовать Claude CLI для генерации ответов (подписка, не API)",
+            action=argparse.BooleanOptionalAction,
+        )
+        parser.add_argument(
+            "--fill-forms",
+            help="Заполнять анкеты/формы по ссылкам из сообщений работодателей",
+            default=False,
             action=argparse.BooleanOptionalAction,
         )
         parser.add_argument(
@@ -114,8 +129,30 @@ class Operation(BaseOperation):
         self.only_invitations = args.only_invitations
 
         self.message_prompt = args.message_prompt
-        self.cover_letter_ai = (tool.get_cover_letter_ai(args.system_prompt) if args.use_ai else None)
+        if args.use_claude:
+            self.cover_letter_ai = (
+                tool.get_cover_letter_claude(args.system_prompt)
+            )
+        elif args.use_ai:
+            self.cover_letter_ai = (
+                tool.get_cover_letter_ai(args.system_prompt)
+            )
+        else:
+            self.cover_letter_ai = None
         self.period = args.period
+
+        self.fill_forms = args.fill_forms
+        if self.fill_forms:
+            claude_cfg = tool.config.get("claude", {})
+            self.form_filler = FormFiller(
+                user_data=tool.config.get(
+                    "form_user_data", {}
+                ),
+                model=claude_cfg.get("model"),
+                timeout=claude_cfg.get("timeout", 120.0),
+            )
+        else:
+            self.form_filler = None
 
         logger.debug(f"{self.reply_message = }")
         self.reply_employers()
@@ -239,6 +276,17 @@ class Operation(BaseOperation):
                 if not last_message:
                     continue
 
+                # Поиск ссылок на формы в сообщениях
+                if self.form_filler:
+                    self._process_form_urls(
+                        nid,
+                        messages_res,
+                        vacancy_context=(
+                            f"{placeholders['vacancy_name']} "
+                            f"от {placeholders['employer_name']}"
+                        ),
+                    )
+
                 is_employer_message = (
                     last_message["author"]["participant_type"] == "employer"
                 )
@@ -343,3 +391,70 @@ class Operation(BaseOperation):
                 logger.error(ex)
 
         print("📝 Сообщения разосланы!")
+
+    _URL_PATTERN = re.compile(r"https?://\S+")
+    _FORM_DOMAINS = (
+        "forms.google.com",
+        "docs.google.com/forms",
+        "forms.yandex.ru",
+        "typeform.com",
+        "surveymonkey.com",
+        "anketolog.ru",
+    )
+
+    def _process_form_urls(
+        self,
+        nid: str,
+        messages_res: datatypes.PaginatedItems[
+            datatypes.Message
+        ],
+        vacancy_context: str,
+    ) -> None:
+        form_urls: list[str] = []
+        for msg in messages_res["items"]:
+            if (
+                msg["author"]["participant_type"]
+                == "employer"
+                and msg.get("text")
+            ):
+                urls = self._URL_PATTERN.findall(
+                    msg["text"]
+                )
+                for url in urls:
+                    if any(
+                        d in url for d in self._FORM_DOMAINS
+                    ):
+                        form_urls.append(url)
+
+        for url in form_urls:
+            logger.info(
+                "Найдена ссылка на форму в чате %s: %s",
+                nid,
+                url,
+            )
+            try:
+                result = self.form_filler.fill_form(
+                    url,
+                    vacancy_context=vacancy_context,
+                    dry_run=self.dry_run,
+                )
+                if result.status == "submitted":
+                    print(
+                        f"📋 Форма заполнена: {url}"
+                    )
+                elif result.status == "escalated":
+                    print(
+                        f"⚠️ Форма в очереди ревью: "
+                        f"{url} ({result.reason})"
+                    )
+                else:
+                    print(
+                        f"❌ Ошибка формы: "
+                        f"{url} ({result.reason})"
+                    )
+            except Exception as ex:
+                logger.error(
+                    "Ошибка заполнения формы %s: %s",
+                    url,
+                    ex,
+                )

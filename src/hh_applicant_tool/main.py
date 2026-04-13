@@ -331,6 +331,22 @@ class HHApplicantTool(MegaTool):
     def get_captcha_ai(self) -> ai.ChatOpenAI:
         return self._init_ai_client(system_prompt="Что написано на картинке?", purpose="captcha")
 
+    def get_cover_letter_claude(
+        self, system_prompt: str
+    ) -> ai.ChatClaude:
+        return self._init_claude_client(system_prompt)
+
+    def _init_claude_client(
+        self, system_prompt: str
+    ) -> ai.ChatClaude:
+        c = self.config.get("claude", {})
+        return ai.ChatClaude(
+            model=c.get("model"),
+            system_prompt=system_prompt,
+            timeout=c.get("timeout", 60.0),
+            rate_limit=c.get("rate_limit", 10),
+        )
+
     def _init_ai_client(self, system_prompt: str, purpose: str) -> ai.ChatOpenAI:
 
         config_sections = {
