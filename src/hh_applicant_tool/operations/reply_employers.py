@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import random
 import re
@@ -108,13 +109,43 @@ class Operation(BaseOperation):
             "--system-prompt",
             "--ai-system",
             help="Системный промпт для AI",
-            default="Ты — соискатель на HeadHunter. Отвечай вежливо и кратко.",
+            default=(
+                "Ты отвечаешь работодателю В ЧАТЕ на hh.ru ОТ ИМЕНИ СОИСКАТЕЛЯ "
+                "(Карнаухов Александр, руководитель отдела маркетинга). "
+                "Строгие правила:\n"
+                "1. Пиши ТОЛЬКО от первого лица (я, мой, мне). НИКОГДА не "
+                "пиши от лица HR/работодателя/рекрутёра.\n"
+                "2. Не раскрывай, что ты ИИ. Никаких фраз вроде 'как языковая "
+                "модель', 'я бот', 'у меня нет опыта как у человека'.\n"
+                "3. Не выдумывай навыки/опыт, которых нет в данных кандидата. "
+                "Если чего-то нет — прямо признай и подсвети смежный опыт.\n"
+                "4. Формат работы: ТОЛЬКО удалёнка или гибрид (предпочтительно "
+                "удалёнка). Фулл-тайм офис не рассматриваю. Про переезд не "
+                "упоминай, это обсудим на собеседовании.\n"
+                "5. Зарплатные ожидания: ориентируюсь на вилку из вакансии, "
+                "минимум 100–120 тыс. руб., предпочтительно от 150 тыс. Для "
+                "руководящих позиций — от 150 тыс. Конкретную сумму готов "
+                "обсудить.\n"
+                "6. Тон: деловой, тёплый, краткий. Без канцелярита, без "
+                "подписей вроде 'С уважением, команда'. Подпись не нужна "
+                "(это чат, не письмо).\n"
+                "7. Длина ответа: 2–4 предложения максимум, если контекст не "
+                "требует иного.\n"
+                "8. Если работодатель задаёт конкретные вопросы — отвечай "
+                "предметно. Если просто написал приветствие — задай "
+                "встречный уточняющий вопрос о задачах/команде."
+            ),
         )
         parser.add_argument(
             "--message-prompt",
             "--prompt",
             help="Промпт для генерации сообщения",
-            default="Напиши короткий ответ работодателю на основе истории переписки.",
+            default=(
+                "Напиши ответ работодателю от лица соискателя на основе "
+                "истории переписки и данных кандидата. Соблюдай все правила "
+                "из системного промпта. Верни ТОЛЬКО текст сообщения, без "
+                "префиксов 'Ответ:', 'Сообщение:', без кавычек и пояснений."
+            ),
         )
 
     def run(self, tool: HHApplicantTool, args: Namespace) -> None:
@@ -129,6 +160,7 @@ class Operation(BaseOperation):
         self.only_invitations = args.only_invitations
 
         self.message_prompt = args.message_prompt
+        self.user_data = tool.config.get("form_user_data", {})
         if args.use_claude:
             self.cover_letter_ai = (
                 tool.get_cover_letter_claude(args.system_prompt)
@@ -195,7 +227,10 @@ class Operation(BaseOperation):
                 # except RepositoryError as e:
                 #     logger.exception(e)
 
-                if not (resume := resume_map.get(negotiation["resume"]["id"])):
+                negotiation_resume = negotiation.get("resume")
+                if not negotiation_resume:
+                    continue
+                if not (resume := resume_map.get(negotiation_resume["id"])):
                     continue
 
                 updated_at = parse_api_datetime(negotiation["updated_at"])
@@ -302,10 +337,24 @@ class Operation(BaseOperation):
                         logger.debug(f"Template message: {send_message}")
                     elif self.cover_letter_ai:
                         try:
+                            user_data_block = ""
+                            if self.user_data:
+                                user_data_block = (
+                                    "\n\nДанные кандидата (используй "
+                                    "по ситуации):\n"
+                                    + json.dumps(
+                                        self.user_data,
+                                        ensure_ascii=False,
+                                        indent=2,
+                                    )
+                                )
+
                             ai_query = (
                                 f"Вакансия: {placeholders['vacancy_name']}\n"
-                                f"История переписки:\n"
+                                f"Работодатель: {placeholders['employer_name']}"
+                                f"\n\nИстория переписки (последние 10 сообщений):\n"
                                 + "\n".join(message_history[-10:])
+                                + user_data_block
                                 + f"\n\nИнструкция: {self.message_prompt}"
                             )
                             send_message = self.cover_letter_ai.complete(

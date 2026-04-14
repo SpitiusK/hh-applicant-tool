@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   apt-get install -y --no-install-recommends nodejs
 
 # Claude CLI (используется для AI-ответов через подписку)
+# Плагины (например playwright-skill) приходят из смонтированного ~/.claude хоста
 RUN npm install -g @anthropic-ai/claude-code
 
 # Настройка пользователя

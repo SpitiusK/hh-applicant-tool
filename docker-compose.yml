@@ -9,6 +9,9 @@ services:
       - .:/app
       # Пробрасываем таймзону хоста
       - /etc/localtime:/etc/localtime:ro
+      # Claude CLI авторизация хоста (подписка пользователя)
+      - ${HOME}/.claude:/home/docker/.claude
+      - ${HOME}/.claude.json:/home/docker/.claude.json
     restart: unless-stopped
     environment:
       # Это не трогаем
