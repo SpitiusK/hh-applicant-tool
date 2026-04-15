@@ -86,7 +86,10 @@ def setup_logger(
     color_handler = ColorHandler()
     # [C] Critical Error Occurred
     color_handler.setFormatter(
-        logging.Formatter("[%(levelname).1s] %(message)s")
+        logging.Formatter(
+            "%(asctime)s [%(levelname).1s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     )
     color_handler.setLevel(verbosity_level)
 

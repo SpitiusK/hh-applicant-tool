@@ -24,9 +24,11 @@ class ChatClaude:
     _: KW_ONLY
 
     system_prompt: str | None = None
+    append_system_prompt: str | None = None
     timeout: float = 60.0
     max_retries: int = 2
     model: str | None = None
+    allowed_tools: list[str] = field(default_factory=list)
 
     # количество запросов в минуту (0 = отключено)
     rate_limit: int = 10
@@ -65,6 +67,16 @@ class ChatClaude:
         cmd = ["claude", "-p"]
         if self.model:
             cmd += ["--model", self.model]
+        if self.append_system_prompt:
+            cmd += [
+                "--append-system-prompt",
+                self.append_system_prompt,
+            ]
+        if self.allowed_tools:
+            cmd += [
+                "--allowed-tools",
+                " ".join(self.allowed_tools),
+            ]
         return cmd
 
     def complete(self, message: str) -> str:

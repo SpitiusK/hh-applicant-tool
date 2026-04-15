@@ -44,6 +44,10 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
 hh-applicant-tool = "hh_applicant_tool.main:main"
+hh-get-vacancy = "hh_applicant_tool.ai.hh_skills.hh_get_vacancy:main"
+hh-get-resume = "hh_applicant_tool.ai.hh_skills.hh_get_resume:main"
+hh-get-employer = "hh_applicant_tool.ai.hh_skills.hh_get_employer:main"
+hh-search-similar = "hh_applicant_tool.ai.hh_skills.hh_search_similar:main"
 
 # Он заебал агриться на старый код, который был написан до появления агрессивной
 # проверки типов в pyright

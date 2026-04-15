@@ -6,11 +6,15 @@ import logging
 import random
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..ai.agent import ReplyAgent
 from ..ai.base import AIError
+from ..ai.claude import ChatClaude
 from ..api import ApiError, datatypes
 from ..forms.filler import FormFiller
+from ..forms.journal import append_confirmation, append_event
 from ..main import BaseNamespace, BaseOperation
 from ..utils.date import parse_api_datetime
 from ..utils.string import rand_text
@@ -161,6 +165,7 @@ class Operation(BaseOperation):
 
         self.message_prompt = args.message_prompt
         self.user_data = tool.config.get("form_user_data", {})
+        self.use_claude = bool(args.use_claude)
         if args.use_claude:
             self.cover_letter_ai = (
                 tool.get_cover_letter_claude(args.system_prompt)
@@ -172,6 +177,20 @@ class Operation(BaseOperation):
         else:
             self.cover_letter_ai = None
         self.period = args.period
+
+        # Пути для журналов событий и подтверждений
+        data_dir = Path(tool.config_dir) / "data"
+        self.events_jsonl = data_dir / "scheduled_events.jsonl"
+        self.agenda_md = data_dir / "agenda.md"
+        self.confirmations_jsonl = data_dir / "pending_confirmations.jsonl"
+
+        # Агент Claude для структурированных ответов
+        if self.use_claude and isinstance(
+            self.cover_letter_ai, ChatClaude
+        ):
+            self.reply_agent = ReplyAgent(self.cover_letter_ai)
+        else:
+            self.reply_agent = None
 
         self.fill_forms = args.fill_forms
         if self.fill_forms:
@@ -277,6 +296,7 @@ class Operation(BaseOperation):
                 page: int = 0
                 last_message: datatypes.Message | None = None
                 message_history: list[str] = []
+                raw_messages: list[dict] = []
                 while True:
                     messages_res: datatypes.PaginatedItems[
                         datatypes.Message
@@ -290,6 +310,7 @@ class Operation(BaseOperation):
                     for message in messages_res["items"]:
                         if not message.get("text"):
                             continue
+                        raw_messages.append(message)
                         author = (
                             "Работодатель"
                             if message["author"]["participant_type"]
@@ -326,15 +347,58 @@ class Operation(BaseOperation):
                     last_message["author"]["participant_type"] == "employer"
                 )
 
-                if is_employer_message or not negotiation.get(
-                    "viewed_by_opponent"
-                ):
+                if is_employer_message:
                     send_message = ""
                     if self.reply_message:
                         send_message = (
                             rand_text(self.reply_message) % placeholders
                         )
                         logger.debug(f"Template message: {send_message}")
+                    elif self.reply_agent is not None:
+                        result = self.reply_agent.process_chat(
+                            negotiation, raw_messages, self.user_data
+                        )
+                        if result.action == "skip":
+                            logger.info(
+                                "skip chat %s: %s",
+                                nid,
+                                result.skip_reason or "no reason",
+                            )
+                            continue
+                        if result.action == "error":
+                            logger.warning(
+                                "agent error for chat %s: %s",
+                                nid,
+                                result.skip_reason,
+                            )
+                            continue
+                        send_message = result.reply
+                        logger.info(
+                            "AI reply for %s: %s",
+                            placeholders["vacancy_name"],
+                            send_message,
+                        )
+                        chat_context = {
+                            "chat_id": nid,
+                            "vacancy_id": vacancy.get("id"),
+                            "vacancy_url": vacancy.get("alternate_url"),
+                            "vacancy_name": vacancy.get("name"),
+                            "employer_name": employer.get("name"),
+                        }
+                        for ev in result.events:
+                            append_event(
+                                ev,
+                                chat_context=chat_context,
+                                jsonl_path=self.events_jsonl,
+                                md_path=self.agenda_md,
+                            )
+                        for cf in result.confirmations:
+                            append_confirmation(
+                                cf,
+                                chat_context=chat_context,
+                                proposed_reply=send_message,
+                                jsonl_path=self.confirmations_jsonl,
+                            )
                     elif self.cover_letter_ai:
                         try:
                             user_data_block = ""
@@ -352,8 +416,8 @@ class Operation(BaseOperation):
                             ai_query = (
                                 f"Вакансия: {placeholders['vacancy_name']}\n"
                                 f"Работодатель: {placeholders['employer_name']}"
-                                f"\n\nИстория переписки (последние 10 сообщений):\n"
-                                + "\n".join(message_history[-10:])
+                                f"\n\nИстория переписки:\n"
+                                + "\n".join(message_history)
                                 + user_data_block
                                 + f"\n\nИнструкция: {self.message_prompt}"
                             )
@@ -434,7 +498,9 @@ class Operation(BaseOperation):
                         message=send_message,
                         delay=random.uniform(1, 3),
                     )
-                    print(f"📨 Отправлено для {vacancy['alternate_url']}")
+                    logger.info(
+                        "📨 Отправлено для %s", vacancy["alternate_url"]
+                    )
 
             except ApiError as ex:
                 logger.error(ex)
