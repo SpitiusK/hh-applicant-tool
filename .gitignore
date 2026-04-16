@@ -90,3 +90,13 @@ docker/
 !/config/.gitkeep
 
 Session.vim
+
+# Extra local artefacts
+.env.*
+config.local.json
+persona.md
+*.sqlite
+*.db
+data/
+logs/
+.claude/
