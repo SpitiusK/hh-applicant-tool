@@ -105,7 +105,7 @@ class Operation(BaseOperation):
                 or storage.settings.get_value("auth.username")
                 or (
                     await asyncio.to_thread(
-                        input, "👤 Введите email или телефон: "
+                        input, "Введите email или телефон: "
                     )
                 )
             ).strip()
@@ -152,8 +152,8 @@ class Operation(BaseOperation):
                 )
                 await page.goto(
                     api_client.oauth_client.authorize_url,
-                    timeout=30000,
-                    wait_until="load",
+                    timeout=60000,
+                    wait_until="domcontentloaded",
                 )
 
                 if self.is_automated:
@@ -184,7 +184,7 @@ class Operation(BaseOperation):
                 )
                 api_client.handle_access_token(token)
 
-                print("🔓 Авторизация прошла успешно!")
+                print("Авторизация прошла успешно!")
 
                 if self.is_automated:
                     storage.settings.set_value("auth.username", username)
@@ -220,9 +220,9 @@ class Operation(BaseOperation):
             self.SEL_CODE_CONTAINER, timeout=self.selector_timeout
         )
 
-        print("📨 Код был отправлен. Проверьте почту или SMS.")
+        print("Код был отправлен. Проверьте почту или SMS.")
         code = (
-            await asyncio.to_thread(input, "📩 Введите полученный код: ")
+            await asyncio.to_thread(input, "Введите полученный код: ")
         ).strip()
         if not code:
             raise RuntimeError("Код подтверждения не может быть пустым.")
@@ -243,17 +243,20 @@ class Operation(BaseOperation):
             return
 
         args = self._args
-        if not (args.use_kitty or args.use_sixel):
+        if not self.is_headless:
+            # В не-headless режиме капча видна в браузере
+            print("\n[!] Требуется ввод капчи. Посмотрите в окно браузера.")
+        elif not (args.use_kitty or args.use_sixel):
             raise RuntimeError(
                 "Требуется ввод капчи! Используйте --kitty или --sixel."
             )
-
-        img_bytes = await captcha_element.screenshot()
-        print("\n[!] Требуется ввод капчи.")
-        if args.use_kitty:
-            print_kitty_image(img_bytes)
-        elif args.use_sixel:
-            print_sixel_mage(img_bytes)
+        else:
+            img_bytes = await captcha_element.screenshot()
+            print("\n[!] Требуется ввод капчи.")
+            if args.use_kitty:
+                print_kitty_image(img_bytes)
+            elif args.use_sixel:
+                print_sixel_mage(img_bytes)
 
         captcha_text = (
             await asyncio.to_thread(input, "Введите текст с картинки: ")
