@@ -53,6 +53,20 @@ Config is a JSONC file at `CONFIG_DIR/config.json` (default `~/.config/hh-applic
 - `form_user_data` — candidate profile injected into reply/form-filler prompts
 - `openai_session` is shared across all AI clients for connection reuse
 
+### AI self-assessment contract (Block 1 rework, 2026-04-17)
+
+Structured AI outputs flow through `ai/schema.py::AIResponse` (pydantic v2) — fields `answer / confidence / escalate / escalation_reason / question_for_user / context_summary / is_sentinel`. Callers use `ChatClaude.complete_json(prompt, response_model=AIResponse)`, which on `ClaudeError / JSONDecodeError / ValidationError` returns a sentinel `AIResponse(is_sentinel=True, escalate=True, escalation_reason="ai_unclear")` instead of raising. `is_sentinel` distinguishes a technical fallback from a deliberate model escalation — logged separately for prompt calibration. `ChatOpenAI.complete_json` is a `NotImplementedError` stub today; OpenAI backend does not use self-assessment path yet.
+
+`apply-vacancies` behaviour changes:
+- `_solve_vacancy_test`: fallback guessing removed (no more "middle option", no more default `answer="Да"`). AI branch goes through `complete_json(response_model=TestSolution)` with id-set validation and one retry before raising `_TestUnsolvable` → `_save_skipped_vacancy(reason="test_no_strategy")`.
+- `_ask_ai_suitability` returns `bool | None`. `None` == AI backend failure or unparseable JSON after retries. New flag `--ai-filter-on-error={skip,pass}` (default `skip` — records `reason=ai_error`). Legacy "silently pass as suitable" is now opt-in.
+
+Per-purpose temperature defaults in `main.py::_init_ai_client`: `vacancy_filter=0.0`, `cover_letter=0.4`, `reply=0.5`, `captcha=0.0`. User config `openai_<purpose>.temperature` still wins. `ChatClaude` ignores sampling params — `claude -p` is controlled by the subscription.
+
+All `claude -p` invocations now route through `ChatClaude.complete()` / `.complete_json()` so the rate-limit lock applies. `forms/filler.py` previously spawned `subprocess` directly in filler/reviewer/submit stages — now uses per-stage `ChatClaude` instances (note: locks are per-stage, not global; fine for the sequential form pipeline).
+
+New `skipped_vacancies.reason` codes introduced this block: `test_no_strategy`, `ai_error`. Existing: `excluded_filter`, `ai_rejected`.
+
 ### AI backends (`src/hh_applicant_tool/ai/`)
 
 Two parallel `@dataclass` backends share the same `complete(message: str) -> str` interface (duck-typed, no ABC):
