@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..ai.base import AIError
+from ..ai.claude import ChatClaude, ClaudeError
 from .reviewer import FormResult, ReviewVerdict
 
 logger = logging.getLogger(__package__)
@@ -22,9 +22,39 @@ class FormFiller:
     user_data: dict
     model: str | None = None
     timeout: float = 180.0
+    rate_limit: int = 10
     review_queue_path: Path = field(
         default_factory=lambda: Path("data/review_queue.jsonl")
     )
+
+    # Per-stage ChatClaude-клиенты — создаются в __post_init__, чтобы все
+    # вызовы claude CLI шли через общий путь complete() с rate-limit lock
+    # (П.5). У каждого инстанса свой Lock, это не глобальный throttle
+    # между стадиями, но внутри одной стадии гонок не будет и легко
+    # переехать на общий лок в будущем.
+    _filler_claude: ChatClaude = field(init=False, repr=False)
+    _reviewer_claude: ChatClaude = field(init=False, repr=False)
+    _submit_claude: ChatClaude = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        tool_scope: list[str] = []  # allowed_tools перекрываются подпиской
+        self._filler_claude = ChatClaude(
+            model=self.model,
+            timeout=self.timeout,
+            rate_limit=self.rate_limit,
+            allowed_tools=tool_scope,
+        )
+        self._reviewer_claude = ChatClaude(
+            model=self.model,
+            timeout=60.0,
+            rate_limit=self.rate_limit,
+        )
+        self._submit_claude = ChatClaude(
+            model=self.model,
+            timeout=self.timeout,
+            rate_limit=self.rate_limit,
+            allowed_tools=tool_scope,
+        )
 
     def fill_form(
         self,
@@ -122,12 +152,6 @@ class FormFiller:
             reason=verdict.feedback,
         )
 
-    def _build_cmd(self) -> list[str]:
-        cmd = ["claude", "-p"]
-        if self.model:
-            cmd += ["--model", self.model]
-        return cmd
-
     def _run_filler_agent(
         self,
         url: str,
@@ -160,20 +184,11 @@ class FormFiller:
 - НЕ нажимай Submit/Отправить
 """
 
-        result = subprocess.run(
-            self._build_cmd(),
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout,
-        )
+        try:
+            response = self._filler_claude.complete(prompt).strip()
+        except ClaudeError as ex:
+            raise AIError(f"Filler agent ошибка: {ex}") from ex
 
-        if result.returncode != 0:
-            raise AIError(
-                f"Filler agent ошибка: {result.stderr.strip()}"
-            )
-
-        response = result.stdout.strip()
         return self._parse_json_response(response)
 
     def _run_reviewer_agent(
@@ -221,26 +236,16 @@ class FormFiller:
 - По умолчанию "approve", если нет реальных проблем
 """
 
-        result = subprocess.run(
-            self._build_cmd(),
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-
-        if result.returncode != 0:
-            logger.warning(
-                "Reviewer agent ошибка: %s",
-                result.stderr.strip(),
-            )
+        try:
+            response = self._reviewer_claude.complete(prompt)
+        except ClaudeError as ex:
+            logger.warning("Reviewer agent ошибка: %s", ex)
             return ReviewVerdict(
                 action="escalate",
-                feedback=f"Ошибка ревьюера: "
-                f"{result.stderr.strip()}",
+                feedback=f"Ошибка ревьюера: {ex}",
             )
 
-        return ReviewVerdict.from_json(result.stdout)
+        return ReviewVerdict.from_json(response)
 
     def _run_submit_agent(
         self, url: str, approved_answers: list[dict]
@@ -259,19 +264,10 @@ class FormFiller:
 - Подтверди успешную отправку
 """
 
-        result = subprocess.run(
-            self._build_cmd(),
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout,
-        )
-
-        if result.returncode != 0:
-            logger.error(
-                "Submit agent ошибка: %s",
-                result.stderr.strip(),
-            )
+        try:
+            self._submit_claude.complete(prompt)
+        except ClaudeError as ex:
+            logger.error("Submit agent ошибка: %s", ex)
 
     def _save_to_queue(
         self,
