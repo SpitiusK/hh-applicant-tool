@@ -4,8 +4,12 @@ import subprocess
 import time
 from dataclasses import KW_ONLY, dataclass, field
 from threading import Lock
+from typing import overload
+
+from pydantic import BaseModel, ValidationError
 
 from .base import AIError
+from .schema import AIResponse
 
 logger = logging.getLogger(__package__)
 
@@ -132,16 +136,61 @@ class ChatClaude:
             f"{result.stderr.strip()}"
         )
 
-    def complete_json(self, message: str) -> dict | list:
-        """Генерация JSON через Claude CLI."""
+    # NOTE: claude -p не принимает параметр temperature — семплирование
+    # контролируется подпиской на стороне Anthropic. В отличие от ChatOpenAI,
+    # здесь нельзя развести "детерминизм для фильтра / креатив для cover".
+
+    @overload
+    def complete_json(
+        self, message: str, response_model: None = None
+    ) -> dict | list: ...
+
+    @overload
+    def complete_json(
+        self,
+        message: str,
+        response_model: type[BaseModel],
+    ) -> BaseModel: ...
+
+    def complete_json(
+        self,
+        message: str,
+        response_model: type[BaseModel] | None = None,
+    ) -> dict | list | BaseModel:
+        """Генерация JSON через Claude CLI.
+
+        При передаче `response_model` (pydantic-класса) ответ валидируется
+        в экземпляр этого класса. На ClaudeError / JSONDecodeError /
+        ValidationError возвращается sentinel-AIResponse (is_sentinel=True,
+        escalate=True, escalation_reason="ai_unclear") — если
+        response_model является AIResponse или его наследником. Иначе
+        исключение прокидывается дальше (старое поведение).
+        """
         if not message.rstrip().endswith(
             "JSON"
         ) and "json" not in message.lower():
             message += "\n\nОтветь строго в формате JSON."
 
-        response = self.complete(message)
+        returns_ai_response = response_model is not None and issubclass(
+            response_model, AIResponse
+        )
 
-        # Пытаемся извлечь JSON из ответа
+        try:
+            response = self.complete(message)
+        except ClaudeError:
+            if returns_ai_response:
+                logger.warning(
+                    "ChatClaude.complete_json: CLI упал, возвращаем sentinel"
+                )
+                return response_model(  # type: ignore[misc]
+                    answer="",
+                    confidence=0.0,
+                    escalate=True,
+                    escalation_reason="ai_unclear",
+                    is_sentinel=True,
+                )
+            raise
+
         text = response.strip()
         if text.startswith("```"):
             lines = text.split("\n")
@@ -151,9 +200,41 @@ class ChatClaude:
             text = "\n".join(lines)
 
         try:
-            return json.loads(text)
+            data = json.loads(text)
         except json.JSONDecodeError as ex:
+            if returns_ai_response:
+                logger.warning(
+                    "ChatClaude.complete_json: невалидный JSON, sentinel. %s",
+                    ex,
+                )
+                return response_model(  # type: ignore[misc]
+                    answer="",
+                    confidence=0.0,
+                    escalate=True,
+                    escalation_reason="ai_unclear",
+                    is_sentinel=True,
+                )
             raise ClaudeError(
                 f"Claude вернул невалидный JSON: {ex}\n"
                 f"Ответ: {response[:500]}"
             ) from ex
+
+        if response_model is None:
+            return data
+
+        try:
+            return response_model.model_validate(data)
+        except ValidationError as ex:
+            if returns_ai_response:
+                logger.warning(
+                    "ChatClaude.complete_json: ValidationError, sentinel. %s",
+                    ex,
+                )
+                return response_model(  # type: ignore[misc]
+                    answer="",
+                    confidence=0.0,
+                    escalate=True,
+                    escalation_reason="ai_unclear",
+                    is_sentinel=True,
+                )
+            raise
