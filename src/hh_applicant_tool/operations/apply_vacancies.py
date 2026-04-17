@@ -51,6 +51,7 @@ class Namespace(BaseNamespace):
     force_message: bool
     use_ai: bool
     ai_filter: Literal["heavy", "light"] | None
+    ai_filter_on_error: Literal["skip", "pass"]
     ai_rate_limit: int
     system_prompt: str
     message_prompt: str
@@ -129,6 +130,12 @@ class Operation(BaseOperation):
             help="Использовать AI для фильтрации вакансий. Режимы: heavy - полный анализ вакансии и резюме, light - быстрый анализ по названию и навыкам",
             choices=["heavy", "light"],
             default=None,
+        )
+        parser.add_argument(
+            "--ai-filter-on-error",
+            help="Поведение AI-фильтра при AIError: skip — пропустить вакансию с reason=ai_error (безопасный дефолт), pass — считать подходящей (старое поведение).",
+            choices=["skip", "pass"],
+            default="skip",
         )
         parser.add_argument(
             "--ai-rate-limit",
@@ -397,6 +404,7 @@ class Operation(BaseOperation):
             else None
         )
         self.ai_filter = args.ai_filter
+        self.ai_filter_on_error = args.ai_filter_on_error
         self.vacancy_filter_ai = None
         self._resume_analysis_cache: dict[tuple[str | None, str], str] = {}
 
@@ -518,7 +526,7 @@ class Operation(BaseOperation):
 
     def _ask_ai_suitability(
         self, prompt: str, vacancy_name: str, log_suffix: str = ""
-    ) -> bool:
+    ) -> bool | None:
 
         MAX_RETRIES = 3
 
@@ -559,7 +567,7 @@ class Operation(BaseOperation):
             except AIError as e:
                 # ChatOpenAI уже делает retry для 429, поэтому здесь только логируем
                 logger.error("Ошибка AI %s: %s", log_suffix, e)
-                return True
+                return None
 
         logger.warning(
             "AI %s не дал валидный JSON после %d попыток для вакансии %s",
@@ -567,7 +575,7 @@ class Operation(BaseOperation):
             MAX_RETRIES,
             vacancy_name,
         )
-        return True
+        return None
 
     def _parse_ai_json_response(self, response: str) -> bool | None:
         response = response.strip().lower()
@@ -600,7 +608,7 @@ class Operation(BaseOperation):
         return None
 
     # КТО ЭТО ПРОЧИТАЛ ТОТ ПИД@РАС
-    def _is_vacancy_suitable_heavy(self, vacancy: dict) -> bool:
+    def _is_vacancy_suitable_heavy(self, vacancy: dict) -> bool | None:
         full_vacancy = None
         if vacancy.get("id"):
             full_vacancy = self.api_client.get(f"/vacancies/{vacancy['id']}")
@@ -615,7 +623,7 @@ class Operation(BaseOperation):
             prompt, vacancy.get("name", ""), "(heavy)"
         )
 
-    def _is_vacancy_suitable_light(self, vacancy: dict) -> bool:
+    def _is_vacancy_suitable_light(self, vacancy: dict) -> bool | None:
         vacancy_info = self._build_vacancy_context(vacancy, include_full=False)
         prompt = f"Вакансия: {vacancy_info}"
         return self._ask_ai_suitability(
@@ -929,7 +937,27 @@ class Operation(BaseOperation):
                             f"Неизвестный режим AI фильтра: {self.ai_filter}"
                         )
 
-                    if not is_suitable:
+                    if is_suitable is None:
+                        if self.ai_filter_on_error == "skip":
+                            logger.warning(
+                                "AI-фильтр упал, пропускаем вакансию: %s",
+                                vacancy["alternate_url"],
+                            )
+                            print(
+                                "⚠️ AI-фильтр недоступен, пропускаем",
+                                vacancy["alternate_url"],
+                            )
+                            self._save_skipped_vacancy(
+                                vacancy, "ai_error", resume["id"]
+                            )
+                            continue
+                        # ai_filter_on_error == "pass" — старое поведение:
+                        # считаем подходящей и пропускаем AI-фильтр.
+                        logger.warning(
+                            "AI-фильтр упал, пропускаем проверку (pass): %s",
+                            vacancy["alternate_url"],
+                        )
+                    elif not is_suitable:
                         logger.info(
                             "Вакансия отклонена AI фильтром (%s): %s",
                             self.ai_filter,
