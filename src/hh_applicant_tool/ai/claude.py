@@ -23,6 +23,10 @@ class ChatClaude:
     """AI-бэкенд через Claude CLI (claude -p).
 
     Использует подписку пользователя, а не API-ключ.
+
+    NOTE: temperature/top_p не применимы для ChatClaude —
+    `claude -p` не принимает sampling-параметры, они управляются подпиской.
+    Per-purpose sampling есть только у ChatOpenAI (см. фабрики в main.py).
     """
 
     _: KW_ONLY

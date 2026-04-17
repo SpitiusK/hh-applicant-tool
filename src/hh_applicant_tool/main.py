@@ -354,13 +354,23 @@ class HHApplicantTool(MegaTool):
             "vacancy_filter": "openai_vacancy_filter",
             "captcha": "openai_captcha",
         }
-        
+
+        # Per-purpose temperature defaults: фильтр/капча — детерминизм,
+        # генерация текста — умеренная креативность. Пользователь может
+        # перебить через config.openai_<purpose>.temperature.
+        default_temperature_by_purpose = {
+            "vacancy_filter": 0.0,
+            "cover_letter": 0.4,
+            "reply": 0.5,
+            "captcha": 0.0,
+        }
+
         if purpose not in config_sections:
             raise ValueError(
                 f"Неизвестная цель AI: {purpose}. "
                 f"Допустимые значения: {list(config_sections.keys())}"
             )
-        
+
         config_section = config_sections[purpose]
         c = self.config.get(config_section, {})
         
@@ -391,7 +401,10 @@ class HHApplicantTool(MegaTool):
         return ai.ChatOpenAI(
             api_key=api_key,
             model=model,
-            temperature=c.get("temperature", 0.0),
+            temperature=c.get(
+                "temperature",
+                default_temperature_by_purpose.get(purpose, 0.0),
+            ),
             max_completion_tokens=c.get("max_completion_tokens", 1000),
             system_prompt=system_prompt,
             base_url=base_url,

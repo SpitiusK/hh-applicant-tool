@@ -29,6 +29,9 @@ class ChatOpenAI:
     # Параметры для retry логики
     max_retries: int = 5
 
+    # temperature per purpose — default выставляется в фабриках main.py
+    # (vacancy_filter=0.0, cover_letter=0.4, reply=0.5, captcha=0.0).
+    # Пользователь может перебить через config.openai_<purpose>.temperature.
     temperature: float = 0.0
     max_completion_tokens: int = 1000
     model: str | None = None
