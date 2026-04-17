@@ -40,6 +40,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__package__)
 
 
+class _TestUnsolvable(Exception):
+    """Тест вакансии нельзя решить без угадывания — сигнал к skip."""
+
+
 class Namespace(BaseNamespace):
     resume_id: str | None
     letter_file: Path | None
@@ -1051,6 +1055,20 @@ class Operation(BaseOperation):
                                     logger.error(
                                         f"Произошла ошибка при отклике на вакансию с тестом: {vacancy['alternate_url']} - {err}"
                                     )
+                    except _TestUnsolvable as ex:
+                        logger.info(
+                            "Тест не решаем без угадывания: %s (%s)",
+                            vacancy["alternate_url"],
+                            ex,
+                        )
+                        print(
+                            "⏭️ Пропускаем вакансию с нерешаемым тестом",
+                            vacancy["alternate_url"],
+                        )
+                        self._save_skipped_vacancy(
+                            vacancy, "test_no_strategy", resume["id"]
+                        )
+                        continue
                     except Exception as ex:
                         logger.error(f"Произошла непредвиденная ошибка: {ex}")
                         continue
@@ -1246,14 +1264,11 @@ class Operation(BaseOperation):
                         filter(lambda x: x["text"].lower() == "да", solutions),
                         None,
                     )
-
-                    payload[field_name] = (
-                        yes_solution["id"]
-                        if yes_solution
-                        # По статистике правильный ответ в большинстве случаев
-                        # находится посередине
-                        else solutions[len(solutions) // 2]["id"]
-                    )
+                    if yes_solution is None:
+                        raise _TestUnsolvable(
+                            f"task {task['id']}: нет AI и нет явного 'да' среди вариантов"
+                        )
+                    payload[field_name] = yes_solution["id"]
             else:
                 # Рандомные эмоджи
                 # payload[f"{field_name}_text"] = "".join(
@@ -1268,9 +1283,10 @@ class Operation(BaseOperation):
                 elif self.cover_letter_ai:
                     prompt = f"Дай краткий и профессиональный ответ на вопрос: {question}"
                     answer = self.cover_letter_ai.complete(prompt)
-                # Тупоеблые любят вопросы с ответами да/нет, где ответ да является правильным в большинстве случаев.
                 else:
-                    answer = "Да"
+                    raise _TestUnsolvable(
+                        f"task {task['id']}: текстовый вопрос без AI и без ссылки"
+                    )
 
                 payload[f"{field_name}_text"] = answer
 
