@@ -156,6 +156,27 @@ class ChatOpenAI:
 
         raise OpenAIError("OpenAI request failed after retries")
 
+    def complete_json(
+        self,
+        message: str,
+        response_model: type | None = None,
+        **kwargs,
+    ):
+        """Заглушка для структурированного вывода.
+
+        TODO: complete_json for ChatOpenAI not implemented — self-assessment
+        path currently uses ChatClaude. Implement when OpenAI backend is
+        needed for structured output (через response_format=json_schema или
+        tool-use с pydantic). Контракт должен совпадать с
+        ChatClaude.complete_json: при sentinel-fallback возвращать
+        AIResponse(is_sentinel=True, escalate=True).
+        """
+        raise NotImplementedError(
+            "complete_json for ChatOpenAI not implemented — "
+            "self-assessment path currently uses ChatClaude. "
+            "Implement when OpenAI backend is needed for structured output."
+        )
+
     def solve_captcha(self, image_data: bytes) -> str:
         image_base64 = base64.b64encode(image_data).decode("utf-8")
 

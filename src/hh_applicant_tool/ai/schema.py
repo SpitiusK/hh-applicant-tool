@@ -22,3 +22,17 @@ class AIResponse(BaseModel):
     question_for_user: str | None = None
     context_summary: str | None = None
     is_sentinel: bool = False
+
+
+class TestSolution(BaseModel):
+    """Ответ модели на вопрос теста вакансии с выбором из вариантов.
+
+    `selected_id` может прийти как int или str — hh.ru в разных местах
+    присылает разные типы, нормализуем на стороне вызывающего кода.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    selected_id: int | str
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+    escalate: bool = False

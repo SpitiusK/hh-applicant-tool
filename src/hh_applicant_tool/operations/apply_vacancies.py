@@ -19,6 +19,7 @@ import requests
 
 from .. import utils
 from ..ai.base import AIError
+from ..ai.schema import TestSolution
 from ..api import BadResponse, Redirect, datatypes
 from ..api.datatypes import PaginatedItems, SearchVacancy
 from ..api.errors import ApiError, CaptchaRequired, LimitExceeded
@@ -1226,6 +1227,69 @@ class Operation(BaseOperation):
         except json.JSONDecodeError as ex:
             raise ValueError("Не могу распарсить vacancyTests.") from ex
 
+    def _pick_test_solution_id(
+        self,
+        prompt: str,
+        valid_ids: set[str],
+        task_id: str | int,
+    ) -> str:
+        """Спросить AI id ответа через complete_json + TestSolution.
+
+        1 retry при невалидном id / sentinel. Иначе — _TestUnsolvable.
+        """
+        attempts = [prompt]
+        attempts.append(
+            prompt
+            + "\n\nПРЕДЫДУЩИЙ ОТВЕТ НЕВАЛИДЕН. "
+            + f"Выбери ТОЛЬКО id из списка: {sorted(valid_ids)}. "
+            + "Никаких других значений. JSON-формат обязателен."
+        )
+
+        last_err: str = ""
+        for attempt_idx, current_prompt in enumerate(attempts):
+            try:
+                resp = self.cover_letter_ai.complete_json(
+                    current_prompt, response_model=TestSolution
+                )
+            except NotImplementedError as ex:
+                raise _TestUnsolvable(
+                    f"task {task_id}: backend не поддерживает complete_json ({ex})"
+                ) from ex
+            except AIError as ex:
+                last_err = f"AIError: {ex}"
+                logger.warning(
+                    "task %s: AI complete_json упал (попытка %d): %s",
+                    task_id,
+                    attempt_idx + 1,
+                    ex,
+                )
+                continue
+
+            if getattr(resp, "is_sentinel", False):
+                last_err = "sentinel (невалидный JSON/validation)"
+                logger.warning(
+                    "task %s: sentinel на попытке %d",
+                    task_id,
+                    attempt_idx + 1,
+                )
+                continue
+
+            candidate = str(resp.selected_id)
+            if candidate in valid_ids:
+                return candidate
+
+            last_err = f"id {candidate!r} вне {sorted(valid_ids)}"
+            logger.warning(
+                "task %s: AI вернул невалидный id на попытке %d: %s",
+                task_id,
+                attempt_idx + 1,
+                last_err,
+            )
+
+        raise _TestUnsolvable(
+            f"task {task_id}: не получили валидный id после retry ({last_err})"
+        )
+
     def _solve_vacancy_test(
         self,
         vacancy_id: str | int,
@@ -1269,22 +1333,22 @@ class Operation(BaseOperation):
 
             if solutions:
                 if self.cover_letter_ai:
+                    valid_ids = {str(s["id"]) for s in solutions}
                     options = "\n".join(
                         [
                             f"{s['id']}: {strip_tags(s['text'])}"
                             for s in solutions
                         ]
                     )
-                    prompt = (
+                    base_prompt = (
                         f"Вопрос: {question}\n"
                         f"Варианты:\n{options}\n"
-                        f"Выбери ID правильного ответа. Пришли только ID."
+                        f'Выбери правильный ID ответа из списка: {sorted(valid_ids)}. '
+                        f'Ответь строго JSON: '
+                        f'{{"selected_id": <id>, "confidence": <0..1>, "escalate": false}}.'
                     )
-                    ai_answer = self.cover_letter_ai.complete(prompt).strip()
-                    # Ищем ID в ответе AI на случай лишнего текста
-                    match = re.search(r"\d+", ai_answer)
-                    selected_id = (
-                        match.group(0) if match else solutions[0]["id"]
+                    selected_id = self._pick_test_solution_id(
+                        base_prompt, valid_ids, task_id=task["id"]
                     )
                     payload[field_name] = selected_id
                 else:
