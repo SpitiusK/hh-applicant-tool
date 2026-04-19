@@ -6,6 +6,7 @@ from .repositories.ai_decisions import AiDecisionsRepository
 from .repositories.contacts import VacancyContactsRepository
 from .repositories.employer_sites import EmployerSitesRepository
 from .repositories.employers import EmployersRepository
+from .repositories.events import EventsRepository
 from .repositories.negotiations import NegotiationRepository
 from .repositories.pending_messages import PendingMessagesRepository
 from .repositories.resumes import ResumesRepository
@@ -23,6 +24,7 @@ class StorageFacade:
         self.ai_decisions = AiDecisionsRepository(conn)
         self.employer_sites = EmployerSitesRepository(conn)
         self.employers = EmployersRepository(conn)
+        self.events = EventsRepository(conn)
         self.negotiations = NegotiationRepository(conn)
         self.pending_messages = PendingMessagesRepository(conn)
         self.resumes = ResumesRepository(conn)
