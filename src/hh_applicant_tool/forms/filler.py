@@ -23,6 +23,10 @@ class FormFiller:
     model: str | None = None
     timeout: float = 180.0
     rate_limit: int = 10
+    # approval_mode пробрасывается из операции-caller (П.9). Сам FormFiller
+    # его пока не использует — П.21 переведёт escalate на pending_messages,
+    # и тогда approve/never-ветки разведутся по этому полю.
+    approval_mode: str = "on_escalation"
     review_queue_path: Path = field(
         default_factory=lambda: Path("data/review_queue.jsonl")
     )

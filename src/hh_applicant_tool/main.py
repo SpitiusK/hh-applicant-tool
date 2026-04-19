@@ -170,6 +170,22 @@ class HHApplicantTool(MegaTool):
 
         return proxies
 
+    # Дефолты секции config["approval"] (П.9). Используется операциями,
+    # которые поддерживают approval-loop, для подмешивания дефолтов в
+    # argparse и для решения _should_escalate (П.13).
+    _APPROVAL_DEFAULTS: dict[str, Any] = {
+        "mode": "on_escalation",
+        "confidence_threshold": 0.7,
+        "always_escalate_actions": [],
+        "max_iterations": 3,
+        "sanity_frequency": 20,
+    }
+
+    def get_approval_defaults(self) -> dict[str, Any]:
+        """Возвращает approval-конфиг: defaults, перекрытые config['approval']."""
+        user_cfg = self.config.get("approval", {}) or {}
+        return {**self._APPROVAL_DEFAULTS, **user_cfg}
+
     def _get_openai_proxies(self) -> dict[str, str]:
         openai_config = self.config.get("openai", {})
         proxy_url = self.openai_proxy_url or openai_config.get("proxy_url")

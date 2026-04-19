@@ -7,7 +7,7 @@ import random
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from ..ai.agent import ReplyAgent
 from ..ai.base import AIError
@@ -44,6 +44,7 @@ class Namespace(BaseNamespace):
     use_ai: bool
     use_claude: bool
     fill_forms: bool
+    approval_mode: Literal["never", "on_escalation", "always"] | None
     system_prompt: str
     message_prompt: str
     period: int
@@ -108,6 +109,12 @@ class Operation(BaseOperation):
             help="Заполнять анкеты/формы по ссылкам из сообщений работодателей",
             default=False,
             action=argparse.BooleanOptionalAction,
+        )
+        parser.add_argument(
+            "--approval-mode",
+            help="Когда эскалировать действие человеку: never — автономно всегда, on_escalation — только при AI.escalate или низкой confidence (дефолт из config.approval.mode, иначе 'on_escalation'), always — на каждое действие.",
+            choices=["never", "on_escalation", "always"],
+            default=None,
         )
         parser.add_argument(
             "--system-prompt",
@@ -192,6 +199,11 @@ class Operation(BaseOperation):
         else:
             self.reply_agent = None
 
+        self.approval_defaults = tool.get_approval_defaults()
+        self.approval_mode = (
+            args.approval_mode or self.approval_defaults["mode"]
+        )
+
         self.fill_forms = args.fill_forms
         if self.fill_forms:
             claude_cfg = tool.config.get("claude", {})
@@ -201,6 +213,7 @@ class Operation(BaseOperation):
                 ),
                 model=claude_cfg.get("model"),
                 timeout=claude_cfg.get("timeout", 120.0),
+                approval_mode=self.approval_mode,
             )
         else:
             self.form_filler = None

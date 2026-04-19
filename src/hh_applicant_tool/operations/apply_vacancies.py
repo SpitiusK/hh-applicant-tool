@@ -53,6 +53,7 @@ class Namespace(BaseNamespace):
     use_ai: bool
     ai_filter: Literal["heavy", "light"] | None
     ai_filter_on_error: Literal["skip", "pass"]
+    approval_mode: Literal["never", "on_escalation", "always"] | None
     ai_rate_limit: int
     system_prompt: str
     message_prompt: str
@@ -137,6 +138,12 @@ class Operation(BaseOperation):
             help="Поведение AI-фильтра при AIError: skip — пропустить вакансию с reason=ai_error (безопасный дефолт), pass — считать подходящей (старое поведение).",
             choices=["skip", "pass"],
             default="skip",
+        )
+        parser.add_argument(
+            "--approval-mode",
+            help="Когда эскалировать действие человеку: never — автономно всегда, on_escalation — только при AI.escalate или низкой confidence (дефолт из config.approval.mode, иначе 'on_escalation'), always — на каждое действие.",
+            choices=["never", "on_escalation", "always"],
+            default=None,
         )
         parser.add_argument(
             "--ai-rate-limit",
@@ -406,6 +413,10 @@ class Operation(BaseOperation):
         )
         self.ai_filter = args.ai_filter
         self.ai_filter_on_error = args.ai_filter_on_error
+        self.approval_defaults = tool.get_approval_defaults()
+        self.approval_mode = (
+            args.approval_mode or self.approval_defaults["mode"]
+        )
         self.vacancy_filter_ai = None
         self._resume_analysis_cache: dict[tuple[str | None, str], str] = {}
 
