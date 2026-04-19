@@ -26,6 +26,20 @@ class AIResponse(BaseModel):
     is_sentinel: bool = False
 
 
+class TaskClassification(AIResponse):
+    """Классификация сообщения работодателя как тестового задания (П.22c).
+
+    Вторая AI-стадия поверх тех же сообщений, что EventClassification, но
+    с промптом, заточенным под ТЗ / homework / test assignment. Отдельный
+    промпт даёт лучший recall, чем общий event-классификатор.
+    """
+
+    is_task: bool = False
+    task_description: str = ""
+    deadline_iso: str | None = None
+    difficulty_estimate: Literal["small", "medium", "large"] | None = None
+
+
 class EventClassification(AIResponse):
     """Классификация сообщения работодателя как event (П.22b).
 

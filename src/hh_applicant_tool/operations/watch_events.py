@@ -15,7 +15,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..ai.claude import ChatClaude
-from ..ai.schema import EventClassification
+from ..ai.schema import EventClassification, TaskClassification
 from ..approval import (
     escalate_to_user,
     generate_with_self_assessment,
@@ -82,10 +82,7 @@ class Operation(BaseOperation):
             elif stage == "messages":
                 self._stage_messages()
             elif stage == "tasks":
-                logger.info(
-                    "stage=tasks: TODO(П.22c) — детект ТЗ/дедлайнов"
-                )
-                print("tasks: TODO (П.22c)")
+                self._stage_tasks()
 
     # ----------------------------------------------------- stage: state diff
 
@@ -434,5 +431,198 @@ class Operation(BaseOperation):
 
         print(
             f"messages: scanned={scanned}, detected={detected}, "
+            f"escalated={escalated}, dry_run={self.dry_run}"
+        )
+
+    # -------------------------------------------------- stage: tasks (AI)
+
+    _TASKS_PROMPT = (
+        "Ты анализируешь сообщение работодателя и определяешь, содержит "
+        "ли оно тестовое задание (ТЗ / test assignment / homework / "
+        "практическое задание).\n\n"
+        "Вакансия: {vacancy_name}\n"
+        "Работодатель: {employer_name}\n"
+        "Сообщение: {msg_text}\n\n"
+        "Если это НЕ тестовое задание — is_task=false, confidence=0.9.\n"
+        "Если задание — is_task=true, task_description (краткая суть, "
+        "что надо сделать), deadline_iso (ISO8601 срок сдачи, или null "
+        "если дедлайн не указан), difficulty_estimate: small (до 2ч), "
+        "medium (полдня-день), large (больше дня). Если текст задания "
+        "двусмысленный или дедлайн можно интерпретировать по-разному — "
+        "escalate=true, question_for_user конкретный."
+    )
+
+    def _stage_tasks(self) -> None:
+        events_repo = getattr(self.tool.storage, "events", None)
+        settings_repo = self.tool.storage.settings
+        approval_cfg = self.tool.get_approval_defaults()
+        threshold = float(approval_cfg.get("confidence_threshold", 0.7))
+        ai = self._get_event_classifier()
+        detected = 0
+        escalated = 0
+        scanned = 0
+
+        for raw in self.tool.get_negotiations():
+            neg_id = raw.get("id")
+            if not neg_id:
+                continue
+            vacancy = raw.get("vacancy") or {}
+            employer = vacancy.get("employer") or {}
+            vacancy_name = vacancy.get("name") or f"vacancy#{vacancy.get('id')}"
+            employer_name = employer.get("name") or "—"
+
+            last_seen_key = f"watch_events_last_task:{neg_id}"
+            last_seen_raw = settings_repo.get_value(last_seen_key) or ""
+
+            try:
+                messages_page = self.tool.api_client.get(
+                    f"/negotiations/{neg_id}/messages", page=0
+                )
+            except Exception:
+                logger.exception(
+                    "neg#%s: не прочитать messages (tasks)", neg_id
+                )
+                continue
+
+            items = (messages_page or {}).get("items") or []
+            max_seen = last_seen_raw
+            for msg in items:
+                author = msg.get("author") or {}
+                if author.get("participant_type") != "employer":
+                    continue
+                created_at = msg.get("created_at") or ""
+                if last_seen_raw and created_at <= last_seen_raw:
+                    continue
+                if created_at > max_seen:
+                    max_seen = created_at
+                scanned += 1
+
+                msg_text = (msg.get("text") or "").strip()
+                if not msg_text:
+                    continue
+
+                prompt = self._TASKS_PROMPT.format(
+                    vacancy_name=vacancy_name,
+                    employer_name=employer_name,
+                    msg_text=msg_text[:2000],
+                )
+                try:
+                    resp = ai.complete_json(
+                        prompt, response_model=TaskClassification
+                    )
+                    if not isinstance(resp, TaskClassification):
+                        # fallback для OpenAI-бэкенда (без complete_json)
+                        base = generate_with_self_assessment(ai, prompt)
+                        resp = TaskClassification(
+                            answer=base.answer,
+                            confidence=base.confidence,
+                            escalate=base.escalate,
+                            escalation_reason=base.escalation_reason,
+                            is_sentinel=base.is_sentinel,
+                        )
+                except Exception:
+                    logger.exception(
+                        "neg#%s msg: AI task-classification упала", neg_id
+                    )
+                    continue
+
+                persist_ai_decision(
+                    self.tool.storage,
+                    operation="event_detect",
+                    ai_response=resp,
+                    status="auto_dispatched"
+                    if not should_escalate(
+                        resp,
+                        "event_detect",
+                        {**approval_cfg, "mode": "on_escalation"},
+                    )
+                    else "escalated",
+                    negotiation_id=int(neg_id) if str(neg_id).isdigit() else None,
+                    vacancy_id=vacancy.get("id"),
+                    result_preview=(resp.task_description or msg_text)[:200],
+                    messenger=self._get_messenger(),
+                    approval_cfg=approval_cfg,
+                )
+
+                if not resp.is_task:
+                    continue
+
+                if resp.escalate or resp.confidence < threshold or resp.is_sentinel:
+                    escalated += 1
+                    if self.dry_run:
+                        print(
+                            f"[dry-run] escalate task neg#{neg_id}: "
+                            f"{resp.task_description[:80]} (deadline={resp.deadline_iso})"
+                        )
+                        continue
+                    escalate_to_user(
+                        self.tool.storage,
+                        self._get_messenger(),
+                        action_type="event_detect",
+                        draft_payload={
+                            "event_kind": "task",
+                            "neg_id": neg_id,
+                            "task_description": resp.task_description,
+                            "deadline_iso": resp.deadline_iso,
+                            "difficulty_estimate": resp.difficulty_estimate,
+                            "source_msg_id": msg.get("id"),
+                            "msg_text": msg_text[:1000],
+                        },
+                        ai_response=resp,
+                        approval_cfg={
+                            **approval_cfg,
+                            "mode": "on_escalation",
+                        },
+                    )
+                else:
+                    detected += 1
+                    if self.dry_run:
+                        print(
+                            f"[dry-run] task neg#{neg_id}: "
+                            f"{resp.task_description[:80]} @ {resp.deadline_iso}"
+                        )
+                        continue
+                    if events_repo is None:
+                        logger.warning(
+                            "events-repo not ready; skip task neg#%s", neg_id
+                        )
+                        continue
+                    when_ts = None
+                    if resp.deadline_iso:
+                        try:
+                            when_ts = parse_api_datetime(resp.deadline_iso)
+                        except Exception:
+                            when_ts = None
+                    try:
+                        events_repo.create(
+                            EventModel(
+                                negotiation_id=int(neg_id)
+                                if str(neg_id).isdigit()
+                                else None,
+                                vacancy_id=vacancy.get("id"),
+                                type="task",
+                                title=(resp.task_description or msg_text)[:200],
+                                when_ts=when_ts,
+                                source_msg_id=str(msg.get("id") or ""),
+                                raw_text=msg_text[:2000],
+                                confidence=resp.confidence,
+                                status="detected",
+                            )
+                        )
+                    except Exception:
+                        logger.exception(
+                            "events.create(task) упал для neg#%s", neg_id
+                        )
+
+            if not self.dry_run and max_seen and max_seen != last_seen_raw:
+                try:
+                    settings_repo.set_value(last_seen_key, max_seen)
+                except Exception:
+                    logger.exception(
+                        "не обновить last_seen (tasks) для neg#%s", neg_id
+                    )
+
+        print(
+            f"tasks: scanned={scanned}, detected={detected}, "
             f"escalated={escalated}, dry_run={self.dry_run}"
         )
