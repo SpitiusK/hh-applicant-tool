@@ -12,6 +12,8 @@ services:
       # Claude CLI авторизация хоста (подписка пользователя)
       - ${HOME}/.claude:/home/docker/.claude
       - ${HOME}/.claude.json:/home/docker/.claude.json
+      # Для `generate-persona` — монтируй okami-reports как read-only:
+      # - ../okami-reports:/app/okami-reports:ro
     restart: unless-stopped
     environment:
       # Это не трогаем
