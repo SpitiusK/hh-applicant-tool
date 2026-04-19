@@ -20,3 +20,26 @@ services:
       - TERM=${TERM}
       # Если время на сервере отличается
       # - TZ=Europe/Moscow
+
+  # Long-running Telegram-бот (П.11). Отдельный контейнер поверх того же
+  # image, без cron. Общается с основным сервисом только через SQLite
+  # (pending_messages / ai_decisions). Для работы из РФ пользователь
+  # добавляет `network_mode: "service:wg-amnezia"` через
+  # docker-compose.override.yml — в базовый файл network_mode не кладём.
+  messenger-bot:
+    container_name: hh_messenger_bot
+    image: hh_applicant_tool:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "hh_applicant_tool", "run-messenger-bot"]
+    volumes:
+      - .:/app
+      - /etc/localtime:/etc/localtime:ro
+    restart: unless-stopped
+    depends_on:
+      - hh_applicant_tool
+    environment:
+      - CONFIG_DIR=/app/config
+      - HH_PROFILE_ID=${HH_PROFILE_ID:-}
+      - TERM=${TERM}
