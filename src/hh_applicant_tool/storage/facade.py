@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from .repositories.ai_decisions import AiDecisionsRepository
 from .repositories.contacts import VacancyContactsRepository
 from .repositories.employer_sites import EmployerSitesRepository
 from .repositories.employers import EmployersRepository
@@ -19,6 +20,7 @@ class StorageFacade:
 
     def __init__(self, conn: sqlite3.Connection):
         init_db(conn)
+        self.ai_decisions = AiDecisionsRepository(conn)
         self.employer_sites = EmployerSitesRepository(conn)
         self.employers = EmployersRepository(conn)
         self.negotiations = NegotiationRepository(conn)

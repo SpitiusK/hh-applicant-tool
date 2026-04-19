@@ -6,6 +6,7 @@ import logging
 import pathlib
 import sqlite3
 import sys
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from prettytable import PrettyTable
@@ -47,6 +48,32 @@ class Operation(BaseOperation):
             "--output",
             type=pathlib.Path,
             help="Файл для сохранения",
+        )
+        parser.add_argument(
+            "--ai-stats",
+            action="store_true",
+            help="Статистика ai_decisions за 7 дней (counts by operation/status)",
+        )
+        parser.add_argument(
+            "--escalation-rate",
+            nargs="?",
+            const=7,
+            type=int,
+            metavar="DAYS",
+            help="Доля escalated в ai_decisions за N дней (default 7)",
+        )
+        parser.add_argument(
+            "--sentinel-rate",
+            nargs="?",
+            const=7,
+            type=int,
+            metavar="DAYS",
+            help="Доля is_sentinel в ai_decisions за N дней (default 7)",
+        )
+        parser.add_argument(
+            "--flagged",
+            action="store_true",
+            help="Последние 20 flagged записей ai_decisions",
         )
 
     def run(self, tool: HHApplicantTool, args: Namespace) -> None:
@@ -102,6 +129,14 @@ class Operation(BaseOperation):
                 print(f"❌  SQL Error: {ex}")
                 return 1
 
+        if (
+            args.ai_stats
+            or args.escalation_rate is not None
+            or args.sentinel_rate is not None
+            or args.flagged
+        ):
+            return _run_ai_analytics(tool, args)
+
         if initial_sql := args.sql:
             return execute(initial_sql)
 
@@ -126,3 +161,57 @@ class Operation(BaseOperation):
                     continue
         except EOFError:
             print()
+
+
+def _run_ai_analytics(tool: "HHApplicantTool", args: Namespace) -> None:
+    repo = tool.storage.ai_decisions
+
+    if args.ai_stats:
+        since = datetime.utcnow() - timedelta(days=7)
+        by_op = repo.count_by_operation(since=since)
+        by_status = repo.count_by_status(since=since)
+        total = sum(by_op.values())
+        print(f"AI decisions за последние 7 дней: {total} decisions")
+        if total == 0:
+            return
+        t_op = PrettyTable()
+        t_op.field_names = ["operation", "count"]
+        for op, n in sorted(by_op.items(), key=lambda x: -x[1]):
+            t_op.add_row([op, n])
+        print(t_op)
+        t_st = PrettyTable()
+        t_st.field_names = ["status", "count"]
+        for st, n in sorted(by_status.items(), key=lambda x: -x[1]):
+            t_st.add_row([st, n])
+        print(t_st)
+
+    if args.escalation_rate is not None:
+        days = args.escalation_rate
+        since = datetime.utcnow() - timedelta(days=days)
+        rate = repo.escalation_rate(since=since)
+        print(f"Escalation rate за {days} дн: {rate:.2%}")
+
+    if args.sentinel_rate is not None:
+        days = args.sentinel_rate
+        since = datetime.utcnow() - timedelta(days=days)
+        rate = repo.sentinel_rate(since=since)
+        print(f"Sentinel rate за {days} дн: {rate:.2%}")
+
+    if args.flagged:
+        rows = list(repo.list_flagged(limit=20))
+        if not rows:
+            print("No flagged decisions.")
+            return
+        table = PrettyTable()
+        table.field_names = [
+            "id",
+            "operation",
+            "vacancy_id",
+            "flag_reason",
+            "created_at",
+        ]
+        for r in rows:
+            table.add_row(
+                [r.id, r.operation, r.vacancy_id, r.flag_reason, r.created_at]
+            )
+        print(table)
