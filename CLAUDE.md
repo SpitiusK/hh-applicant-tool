@@ -105,6 +105,29 @@ Old `form_user_data` / `claude` sections unchanged. `excluded_*` sections untouc
 
 `config/config.json` with the bot token stays in `.gitignore` (pattern already in place since the OAuth token).
 
+### Persona + event detector + calendar (Block 3 rework, 2026-04-19)
+
+Three new pieces round out the agent: a static persona injected into every generation prompt, an event detector writing to a dedicated table, and a calendar exporter.
+
+**Persona** — `operations/generate_persona.py` reads the sibling `okami-reports` repo through `claude -p` with Glob/Read/Grep and writes `<CONFIG_DIR>/<profile>/persona.md` (3–5 KB markdown: Role / Skills / Achievements / Tone & voice / Domain context). Manual op, not cron. `config/persona.example.md` is the template. `ai/context.py::get_persona_context(config, config_dir)` reads the file (empty string on miss, logged warning — agent keeps working before the persona file exists). `ai/prompts.py::build_system_prompt(base_rules, persona)` concatenates them for reply/cover-letter system prompts; `ReplyAgent` and `apply-vacancies` cover-letter path both pull it, `_pick_test_solution_id` intentionally does not (would bias id picks). `docker-compose.yml` has a commented volume for `../okami-reports:ro`.
+
+**Event detector** — `operations/watch_events.py` with `--stage {state, messages, tasks, all}`:
+- **22a `state`** (SQL-only, no AI): diffs `negotiation.state` from hh.ru against the local `negotiations` table. Transitions + brand-new non-"response" negotiations emit `events(type='negotiation_state_changed')`. Reliable signal — most interview invitations already ride on state.
+- **22b `messages`** (AI): reads unseen employer chat messages (cursor per negotiation lives in `settings` under `watch_events_last_msg:{neg_id}`). `EventClassification(AIResponse)` with fields `is_event`, `event_type ∈ {interview, offer, deadline}`, `when_iso`, `title`, `notes`. Confident → `events.create(type=event_type, status='detected')`; low-confidence / escalate → `pending_messages(action_type='event_detect')` + MessengerClient approval. Every call writes to `ai_decisions(operation='event_detect')` with sanity sampling (p15).
+- **22c `tasks`** (AI, second pass over the same messages with a dedicated prompt): `TaskClassification(AIResponse)` with `is_task`, `task_description`, `deadline_iso`, `difficulty_estimate ∈ {small, medium, large}`. Separate cursor `watch_events_last_task:{neg_id}`. Writes `events(type='task', when_ts=parsed deadline)`. Stages are separate because a single combined prompt hurts recall on both.
+
+**Events table** (`20260419_events.sql`): `type ∈ {negotiation_state_changed, interview, offer, task, deadline}`, `title`, `when_ts` (nullable — not every event has a concrete time), `source_msg_id`, `raw_text`, `confidence`, `status ∈ {detected, confirmed, rejected, done}`.
+
+**Calendar export** — `operations/export_events.py` (aliases `export`). Drains `events(status='confirmed')` into either `.ics` (hand-rolled RFC-5545 subset, DTSTART/DTEND+1h, CATEGORIES, proper escape of `;`, `,`, `\`, newline) or append-only `data/agenda.md`. Format + output picked from `config.events.calendar.{exporter, output_path}` with CLI override. Hourly `crontab` entry is provided but commented until end-to-end verification.
+
+**Form-filler rewired** — `forms/filler.py` now escalates form reviews through `pending_messages(action_type='form_field')` + MessengerClient. ANY failure in the messaging path (no storage, no messenger, send_approval_request crash) falls back to the legacy `review_queue.jsonl` via `append_confirmation` — forms are never lost. `forms/journal.py` docstring reclassifies `append_confirmation` as failover-only.
+
+**Config finalisation** — `HHApplicantTool` gains `get_persona_cfg()`, `get_events_cfg()` (with deep-merge of the nested `calendar` sub-dict), `get_messaging_cfg()` (same for `telegram` sub-dict), alongside the pre-existing `get_approval_defaults()`. Absent sections → pure defaults, no surprises. `excluded_*` sections are deliberately untouched (parallel session owns them).
+
+**Docs** — `docs/agent_flow.md` has three mermaid `flowchart TD` diagrams covering apply / reply+form / watch+export flows, a config-sections summary, env-var list, and the new CLI commands. README has a short "Agent flow" section pointing at the doc.
+
+**New CLI this block**: `generate-persona` (`persona-gen`), `watch-events` (`events-watch`), `export-events` (`export`). Added alongside block-2 ops (`send-approved` / `run-messenger-bot`).
+
 ### AI backends (`src/hh_applicant_tool/ai/`)
 
 Two parallel `@dataclass` backends share the same `complete(message: str) -> str` interface (duck-typed, no ABC):
