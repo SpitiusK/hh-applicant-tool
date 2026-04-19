@@ -1,6 +1,11 @@
 """Журналы событий и подтверждений для reply-agent.
 
 Пишем в JSONL (append-only) + дублируем в markdown для человекочитаемости.
+
+DEPRECATION (П.21): append_confirmation — FAILOVER-ONLY. Основной путь
+эскалации форм теперь через pending_messages + MessengerClient
+(см. forms/filler.py::_escalate_form_review). JSONL-очередь используется
+только когда messaging недоступен, чтобы форма не потерялась.
 """
 from __future__ import annotations
 

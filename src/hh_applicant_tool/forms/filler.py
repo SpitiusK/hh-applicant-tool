@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Callable
 
 from ..ai.base import AIError
 from ..ai.claude import ChatClaude, ClaudeError
@@ -23,10 +24,13 @@ class FormFiller:
     model: str | None = None
     timeout: float = 180.0
     rate_limit: int = 10
-    # approval_mode пробрасывается из операции-caller (П.9). Сам FormFiller
-    # его пока не использует — П.21 переведёт escalate на pending_messages,
-    # и тогда approve/never-ветки разведутся по этому полю.
     approval_mode: str = "on_escalation"
+    # П.21: storage + messenger_factory делают escalate основным путём.
+    # При любой ошибке messaging-пути — failover в review_queue.jsonl.
+    storage: Any | None = None
+    messenger_factory: Callable[[], Any] | None = None
+    approval_cfg: dict[str, Any] = field(default_factory=dict)
+    messenger_type: str = "telegram"
     review_queue_path: Path = field(
         default_factory=lambda: Path("data/review_queue.jsonl")
     )
@@ -111,7 +115,7 @@ class FormFiller:
                 logger.error(
                     "Filler agent повторная ошибка: %s", ex
                 )
-                self._save_to_queue(
+                self._escalate_form_review(
                     url, proposed, verdict, vacancy_context
                 )
                 return FormResult(
@@ -137,7 +141,7 @@ class FormFiller:
                     status="submitted", answers=proposed2
                 )
 
-            self._save_to_queue(
+            self._escalate_form_review(
                 url, proposed2, verdict2, vacancy_context
             )
             return FormResult(
@@ -147,7 +151,7 @@ class FormFiller:
             )
 
         # escalate
-        self._save_to_queue(
+        self._escalate_form_review(
             url, proposed, verdict, vacancy_context
         )
         return FormResult(
@@ -273,6 +277,89 @@ class FormFiller:
         except ClaudeError as ex:
             logger.error("Submit agent ошибка: %s", ex)
 
+    def _escalate_form_review(
+        self,
+        url: str,
+        proposed: list[dict],
+        verdict: ReviewVerdict,
+        vacancy_context: str,
+    ) -> None:
+        """П.21: основной путь — pending_messages + messenger.
+
+        При любой ошибке (нет storage/factory, messenger падает, create
+        падает) — failover в review_queue.jsonl, чтобы форма не терялась.
+        """
+        if self.storage is None or self.messenger_factory is None:
+            logger.info(
+                "form escalate: storage/messenger_factory не заданы, "
+                "failover в jsonl для %s",
+                url,
+            )
+            self._save_to_queue(url, proposed, verdict, vacancy_context)
+            return
+
+        try:
+            from ..storage.models.pending_message import PendingMessageModel
+
+            draft_id = self.storage.pending_messages.create(
+                PendingMessageModel(
+                    messenger_type=self.messenger_type,
+                    action_type="form_field",
+                    draft_payload={
+                        "url": url,
+                        "answers": proposed,
+                        "vacancy": vacancy_context,
+                        "verdict_feedback": verdict.feedback,
+                        "flagged_items": verdict.flagged_items,
+                    },
+                    status="pending",
+                    question_for_user=(
+                        verdict.feedback
+                        or "Проверь форму перед отправкой"
+                    ),
+                    context_summary=f"form: {url}",
+                    confidence=0.0,
+                    escalation_reason=(
+                        verdict.feedback or "reviewer_escalated"
+                    ),
+                )
+            )
+            messenger = self.messenger_factory()
+            if messenger is None:
+                raise RuntimeError(
+                    "messenger_factory() вернула None"
+                )
+            text = (
+                f"📝 Form escalation: {url}\n"
+                f"Feedback: {verdict.feedback or '—'}"
+            )
+            external_id = messenger.send_approval_request(
+                draft_id=draft_id,
+                text=text,
+                actions=["approve", "reject"],
+            )
+            try:
+                self.storage.pending_messages.update(
+                    draft_id, messenger_message_id=external_id
+                )
+            except Exception:
+                logger.exception(
+                    "form escalate: не удалось сохранить messenger_message_id #%s",
+                    draft_id,
+                )
+            logger.info(
+                "form escalation sent to messenger: pm#%s %s",
+                draft_id,
+                url,
+            )
+        except Exception as ex:
+            logger.error(
+                "FAILOVER: messaging escalation failed (%s), "
+                "fallback в review_queue.jsonl",
+                ex,
+            )
+            self._save_to_queue(url, proposed, verdict, vacancy_context)
+
     def _save_to_queue(
         self,
         url: str,
@@ -280,6 +367,9 @@ class FormFiller:
         verdict: ReviewVerdict,
         vacancy_context: str,
     ) -> None:
+        """Failover-путь (П.21): JSONL-очередь для ручного ревью когда
+        messaging недоступен. Не используется как основной escalate.
+        """
         self.review_queue_path.parent.mkdir(
             parents=True, exist_ok=True
         )
@@ -299,7 +389,7 @@ class FormFiller:
             f.write("\n")
 
         logger.info(
-            "Форма добавлена в очередь ревью: %s", url
+            "Форма добавлена в очередь ревью (failover jsonl): %s", url
         )
 
     @staticmethod

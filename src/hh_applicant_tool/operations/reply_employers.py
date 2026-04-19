@@ -235,6 +235,9 @@ class Operation(BaseOperation):
                 model=claude_cfg.get("model"),
                 timeout=claude_cfg.get("timeout", 120.0),
                 approval_mode=self.approval_mode,
+                storage=tool.storage,
+                messenger_factory=self._get_messenger,
+                approval_cfg=self.approval_cfg,
             )
         else:
             self.form_filler = None
