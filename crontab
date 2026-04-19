@@ -29,3 +29,7 @@ SHELL=/bin/bash
 #0 */1 * * * /bin/bash -c 'sleep $((60 + RANDOM \% 241))' && /usr/local/bin/python -m hh-applicant-tool clear-negotiations -d >> /var/log/cron.log 2>&1
 
 #*/1 * * * * echo "Cron is alive at $(date)" >> /var/log/cron.log 2>&1
+
+# Экспорт подтверждённых events в календарь (.ics / markdown).
+# Раскомментируй когда Блок 3 (watch-events + TG approve) будет запущен.
+#0 */1 * * * /usr/local/bin/python -m hh_applicant_tool export-events >> /var/log/cron.log 2>&1
