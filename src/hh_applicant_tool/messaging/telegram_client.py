@@ -188,11 +188,19 @@ class TelegramClient(MessengerClient):
         storage = self._storage
         config = self._config
 
-        def _is_allowed(user_id: int | None) -> bool:
-            return (
-                allowed_user_id is None
-                or user_id == allowed_user_id
+        if allowed_user_id is None:
+            logger.warning(
+                "messaging.telegram.allowed_user_id не задан — бот будет "
+                "отвергать ВСЕХ пользователей. Задай свой numeric user_id "
+                "в config, чтобы разрешить себе доступ."
             )
+
+        def _is_allowed(user_id: int | None) -> bool:
+            # Fail-closed: если allowed_user_id не задан — пускаем никого.
+            # Раньше было fail-open (любой мог использовать бота) — дыра.
+            if allowed_user_id is None:
+                return False
+            return user_id == allowed_user_id
 
         def _pending_repo():
             """Получить репозиторий pending_messages с защитой от недоступности (П.7)."""
