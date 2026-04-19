@@ -74,15 +74,24 @@ def persist_ai_decision(
     negotiation_id: int | None = None,
     model: str | None = None,
     result_preview: str | None = None,
+    messenger: Any = None,
+    approval_cfg: dict[str, Any] | None = None,
 ) -> int | None:
-    """Записать строку в ai_decisions. Вернуть id или None при ошибке."""
+    """Записать строку в ai_decisions. Вернуть id или None при ошибке.
+
+    Для status='auto_dispatched' запускается sanity-sampling (П.15):
+    с частотой approval_cfg['sanity_frequency'] (default 20) запись
+    помечается sample_for_review=True и шлётся retro-summary в
+    мессенджер. Если messenger=None — сэмпл ставится, отправка
+    пропускается.
+    """
     if result_preview is None:
         answer = ai_response.answer
         result_preview = (
             answer if isinstance(answer, str) else str(answer)
         )[:200]
     try:
-        return storage.ai_decisions.create(
+        decision_id = storage.ai_decisions.create(
             AiDecisionModel(
                 operation=operation,
                 vacancy_id=vacancy_id,
@@ -103,6 +112,25 @@ def persist_ai_decision(
             operation,
         )
         return None
+
+    if status == "auto_dispatched" and decision_id is not None:
+        from .messaging.sanity import send_for_retro_review, should_sample
+
+        frequency = int(
+            (approval_cfg or {}).get("sanity_frequency", 20)
+        )
+        if should_sample(decision_id, frequency):
+            try:
+                storage.ai_decisions.mark_sample_for_review(decision_id)
+            except Exception:
+                logger.exception(
+                    "persist_ai_decision: mark_sample_for_review упал #%s",
+                    decision_id,
+                )
+            else:
+                send_for_retro_review(messenger, storage, decision_id)
+
+    return decision_id
 
 
 def escalate_to_user(

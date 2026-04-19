@@ -248,15 +248,67 @@ class TelegramClient(MessengerClient):
 
         @router.message(Command("sanity"))
         async def _on_sanity(message: Message) -> None:
-            if not _is_allowed(message.from_user.id if message.from_user else None):
+            if not _is_allowed(
+                message.from_user.id if message.from_user else None
+            ):
                 return
-            await message.answer("TODO(П.15): sanity-check sampling")
+            decisions_repo = getattr(storage, "ai_decisions", None)
+            if decisions_repo is None:
+                await message.answer("ai_decisions недоступно")
+                return
+            parts = (message.text or "").split()
+            limit = 10
+            if len(parts) >= 2 and parts[1].isdigit():
+                limit = min(int(parts[1]), 50)
+            try:
+                rows = list(
+                    decisions_repo.list_samples_for_review(limit=limit)
+                )
+            except Exception as ex:
+                await message.answer(f"error: {ex}")
+                return
+            if not rows:
+                await message.answer("Нет sanity-сэмплов.")
+                return
+            lines = [f"🔍 Последние {len(rows)} sanity-сэмплов:"]
+            for r in rows:
+                conf = (
+                    f"{r.confidence:.2f}"
+                    if r.confidence is not None
+                    else "—"
+                )
+                lines.append(
+                    f"#{r.id} {r.operation} conf={conf} "
+                    f"flagged={'✅' if r.flagged else '—'}"
+                )
+            await message.answer("\n".join(lines))
 
         @router.message(Command("flag"))
         async def _on_flag(message: Message) -> None:
-            if not _is_allowed(message.from_user.id if message.from_user else None):
+            if not _is_allowed(
+                message.from_user.id if message.from_user else None
+            ):
                 return
-            await message.answer("TODO(П.15): /flag <decision_id>")
+            decisions_repo = getattr(storage, "ai_decisions", None)
+            if decisions_repo is None:
+                await message.answer("ai_decisions недоступно")
+                return
+            parts = (message.text or "").split(maxsplit=2)
+            if len(parts) < 2 or not parts[1].isdigit():
+                await message.answer(
+                    "Использование: /flag <decision_id> [reason]"
+                )
+                return
+            decision_id = int(parts[1])
+            reason = parts[2] if len(parts) > 2 else "user_flagged"
+            try:
+                decisions_repo.mark_flagged(decision_id, reason)
+            except Exception as ex:
+                await message.answer(f"error: {ex}")
+                return
+            await message.answer(
+                f"🚩 Decision #{decision_id} отмечен: {reason}"
+            )
 
         # ---- callback-query approve/modify/reject ----------------------
 

@@ -452,6 +452,8 @@ class Operation(BaseOperation):
                                 int(nid) if str(nid).isdigit() else None
                             ),
                             result_preview=send_message[:200],
+                            messenger=self._get_messenger(),
+                            approval_cfg=self.approval_cfg,
                         )
                         logger.info(
                             "AI reply for %s: %s",
@@ -549,6 +551,8 @@ class Operation(BaseOperation):
                                 int(nid) if str(nid).isdigit() else None
                             ),
                             result_preview=send_message[:200],
+                            messenger=self._get_messenger(),
+                            approval_cfg=self.approval_cfg,
                         )
                     else:
                         print("🏢", placeholders["employer_name"])
