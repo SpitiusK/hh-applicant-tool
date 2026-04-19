@@ -21,6 +21,12 @@ from .. import utils
 from ..ai.base import AIError
 from ..ai.schema import TestSolution
 from ..api import BadResponse, Redirect, datatypes
+from ..approval import (
+    escalate_to_user,
+    generate_with_self_assessment,
+    persist_ai_decision,
+    should_escalate,
+)
 from ..api.datatypes import PaginatedItems, SearchVacancy
 from ..api.errors import ApiError, CaptchaRequired, LimitExceeded
 from ..main import BaseNamespace, BaseOperation
@@ -417,6 +423,12 @@ class Operation(BaseOperation):
         self.approval_mode = (
             args.approval_mode or self.approval_defaults["mode"]
         )
+        # approval_cfg — дефолты + user override + runtime-флаг (mode).
+        self.approval_cfg = {
+            **self.approval_defaults,
+            "mode": self.approval_mode,
+        }
+        self._messenger = None  # ленивая инициализация
         self.vacancy_filter_ai = None
         self._resume_analysis_cache: dict[tuple[str | None, str], str] = {}
 
@@ -1054,7 +1066,53 @@ class Operation(BaseOperation):
                             + message_placeholders["resume_title"]
                         )
                         logger.debug("prompt: %s", msg)
-                        letter = self.cover_letter_ai.complete(msg)
+                        ai_resp = generate_with_self_assessment(
+                            self.cover_letter_ai, msg
+                        )
+                        answer = ai_resp.answer
+                        letter = (
+                            answer if isinstance(answer, str) else str(answer)
+                        )
+
+                        if should_escalate(
+                            ai_resp, "apply_vacancy", self.approval_cfg
+                        ):
+                            draft_payload = {
+                                "resume_id": resume["id"],
+                                "vacancy_id": vacancy_id,
+                                "message": letter,
+                                "vacancy_url": vacancy.get("alternate_url"),
+                                "vacancy_name": vacancy.get("name"),
+                            }
+                            escalate_to_user(
+                                self.tool.storage,
+                                self._get_messenger(),
+                                action_type="apply_vacancy",
+                                draft_payload=draft_payload,
+                                ai_response=ai_resp,
+                                approval_cfg=self.approval_cfg,
+                            )
+                            logger.info(
+                                "Вакансия эскалирована на approval: %s",
+                                vacancy["alternate_url"],
+                            )
+                            print(
+                                "⏸️ Эскалировано пользователю",
+                                vacancy["alternate_url"],
+                            )
+                            continue
+                        persist_ai_decision(
+                            self.tool.storage,
+                            operation="apply_vacancy",
+                            ai_response=ai_resp,
+                            status="auto_dispatched",
+                            vacancy_id=(
+                                int(vacancy_id)
+                                if str(vacancy_id).isdigit()
+                                else None
+                            ),
+                            result_preview=letter[:200],
+                        )
                     else:
                         letter = (
                             rand_text(self.cover_letter) % message_placeholders
@@ -1237,6 +1295,24 @@ class Operation(BaseOperation):
             )
         except json.JSONDecodeError as ex:
             raise ValueError("Не могу распарсить vacancyTests.") from ex
+
+    def _get_messenger(self):
+        """Ленивая инициализация MessengerClient (approval-loop)."""
+        if self._messenger is not None:
+            return self._messenger
+        try:
+            from ..messaging import get_messenger_client
+
+            self._messenger = get_messenger_client(
+                self.tool.config, self.tool.storage
+            )
+        except Exception as ex:
+            logger.warning(
+                "messenger не инициализирован (%s); эскалации останутся в БД без нотификации",
+                ex,
+            )
+            self._messenger = None
+        return self._messenger
 
     def _pick_test_solution_id(
         self,

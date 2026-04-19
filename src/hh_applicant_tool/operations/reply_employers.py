@@ -12,7 +12,14 @@ from typing import TYPE_CHECKING, Literal
 from ..ai.agent import ReplyAgent
 from ..ai.base import AIError
 from ..ai.claude import ChatClaude
+from ..ai.schema import AIResponse
 from ..api import ApiError, datatypes
+from ..approval import (
+    escalate_to_user,
+    generate_with_self_assessment,
+    persist_ai_decision,
+    should_escalate,
+)
 from ..forms.filler import FormFiller
 from ..forms.journal import append_confirmation, append_event
 from ..main import BaseNamespace, BaseOperation
@@ -203,6 +210,11 @@ class Operation(BaseOperation):
         self.approval_mode = (
             args.approval_mode or self.approval_defaults["mode"]
         )
+        self.approval_cfg = {
+            **self.approval_defaults,
+            "mode": self.approval_mode,
+        }
+        self._messenger = None
 
         self.fill_forms = args.fill_forms
         if self.fill_forms:
@@ -386,6 +398,61 @@ class Operation(BaseOperation):
                             )
                             continue
                         send_message = result.reply
+
+                        # AIResponse для approval-loop: наличие confirmations
+                        # — сильный сигнал к эскалации (агент сам просит
+                        # подтвердить что-то у пользователя).
+                        has_confirmations = bool(result.confirmations)
+                        ai_resp = AIResponse(
+                            answer=send_message,
+                            confidence=0.6 if has_confirmations else 0.9,
+                            escalate=has_confirmations,
+                            escalation_reason=(
+                                "agent_requested_confirmation"
+                                if has_confirmations
+                                else None
+                            ),
+                            question_for_user=(
+                                "; ".join(
+                                    c.get("question", "")
+                                    for c in result.confirmations
+                                )
+                                if has_confirmations
+                                else None
+                            ),
+                        )
+                        if should_escalate(
+                            ai_resp, "reply_employer", self.approval_cfg
+                        ):
+                            draft_payload = {
+                                "nid": nid,
+                                "endpoint": f"/negotiations/{nid}/messages",
+                                "message": send_message,
+                                "vacancy_name": placeholders.get("vacancy_name"),
+                                "employer_name": placeholders.get("employer_name"),
+                            }
+                            escalate_to_user(
+                                self.tool.storage,
+                                self._get_messenger(),
+                                action_type="reply_employer",
+                                draft_payload=draft_payload,
+                                ai_response=ai_resp,
+                                approval_cfg=self.approval_cfg,
+                            )
+                            logger.info(
+                                "reply эскалирован на approval: chat %s", nid
+                            )
+                            continue
+                        persist_ai_decision(
+                            self.tool.storage,
+                            operation="reply_employer",
+                            ai_response=ai_resp,
+                            status="auto_dispatched",
+                            negotiation_id=(
+                                int(nid) if str(nid).isdigit() else None
+                            ),
+                            result_preview=send_message[:200],
+                        )
                         logger.info(
                             "AI reply for %s: %s",
                             placeholders["vacancy_name"],
@@ -413,36 +480,76 @@ class Operation(BaseOperation):
                                 jsonl_path=self.confirmations_jsonl,
                             )
                     elif self.cover_letter_ai:
-                        try:
-                            user_data_block = ""
-                            if self.user_data:
-                                user_data_block = (
-                                    "\n\nДанные кандидата (используй "
-                                    "по ситуации):\n"
-                                    + json.dumps(
-                                        self.user_data,
-                                        ensure_ascii=False,
-                                        indent=2,
-                                    )
+                        user_data_block = ""
+                        if self.user_data:
+                            user_data_block = (
+                                "\n\nДанные кандидата (используй "
+                                "по ситуации):\n"
+                                + json.dumps(
+                                    self.user_data,
+                                    ensure_ascii=False,
+                                    indent=2,
                                 )
+                            )
 
-                            ai_query = (
-                                f"Вакансия: {placeholders['vacancy_name']}\n"
-                                f"Работодатель: {placeholders['employer_name']}"
-                                f"\n\nИстория переписки:\n"
-                                + "\n".join(message_history)
-                                + user_data_block
-                                + f"\n\nИнструкция: {self.message_prompt}"
-                            )
-                            send_message = self.cover_letter_ai.complete(
-                                ai_query
-                            )
-                            logger.debug(f"AI message: {send_message}")
-                        except AIError as ex:
+                        ai_query = (
+                            f"Вакансия: {placeholders['vacancy_name']}\n"
+                            f"Работодатель: {placeholders['employer_name']}"
+                            f"\n\nИстория переписки:\n"
+                            + "\n".join(message_history)
+                            + user_data_block
+                            + f"\n\nИнструкция: {self.message_prompt}"
+                        )
+                        ai_resp = generate_with_self_assessment(
+                            self.cover_letter_ai, ai_query
+                        )
+                        if ai_resp.is_sentinel and not isinstance(
+                            ai_resp.answer, str
+                        ):
                             logger.warning(
-                                f"Ошибка OpenAI для чата {nid}: {ex}"
+                                "sentinel AIResponse for chat %s — skip", nid
                             )
                             continue
+                        send_message = (
+                            ai_resp.answer
+                            if isinstance(ai_resp.answer, str)
+                            else str(ai_resp.answer)
+                        )
+                        logger.debug(f"AI message: {send_message}")
+
+                        if should_escalate(
+                            ai_resp, "reply_employer", self.approval_cfg
+                        ):
+                            draft_payload = {
+                                "nid": nid,
+                                "endpoint": f"/negotiations/{nid}/messages",
+                                "message": send_message,
+                                "vacancy_name": placeholders.get("vacancy_name"),
+                                "employer_name": placeholders.get("employer_name"),
+                            }
+                            escalate_to_user(
+                                self.tool.storage,
+                                self._get_messenger(),
+                                action_type="reply_employer",
+                                draft_payload=draft_payload,
+                                ai_response=ai_resp,
+                                approval_cfg=self.approval_cfg,
+                            )
+                            logger.info(
+                                "reply эскалирован на approval (openai): chat %s",
+                                nid,
+                            )
+                            continue
+                        persist_ai_decision(
+                            self.tool.storage,
+                            operation="reply_employer",
+                            ai_response=ai_resp,
+                            status="auto_dispatched",
+                            negotiation_id=(
+                                int(nid) if str(nid).isdigit() else None
+                            ),
+                            result_preview=send_message[:200],
+                        )
                     else:
                         print("🏢", placeholders["employer_name"])
                         print("💼", placeholders["vacancy_name"])
@@ -529,6 +636,23 @@ class Operation(BaseOperation):
         "surveymonkey.com",
         "anketolog.ru",
     )
+
+    def _get_messenger(self):
+        if self._messenger is not None:
+            return self._messenger
+        try:
+            from ..messaging import get_messenger_client
+
+            self._messenger = get_messenger_client(
+                self.tool.config, self.tool.storage
+            )
+        except Exception as ex:
+            logger.warning(
+                "messenger не инициализирован (%s); эскалации без нотификации",
+                ex,
+            )
+            self._messenger = None
+        return self._messenger
 
     def _process_form_urls(
         self,
