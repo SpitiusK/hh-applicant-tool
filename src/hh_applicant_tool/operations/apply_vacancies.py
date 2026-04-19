@@ -19,6 +19,7 @@ import requests
 
 from .. import utils
 from ..ai.base import AIError
+from ..ai.context import get_persona_context
 from ..ai.schema import TestSolution
 from ..api import BadResponse, Redirect, datatypes
 from ..approval import (
@@ -416,6 +417,9 @@ class Operation(BaseOperation):
             tool.get_cover_letter_ai(args.system_prompt)
             if args.use_ai
             else None
+        )
+        self.persona = get_persona_context(
+            tool.config, tool.config_path
         )
         self.ai_filter = args.ai_filter
         self.ai_filter_on_error = args.ai_filter_on_error
@@ -1065,6 +1069,13 @@ class Operation(BaseOperation):
                             "Мое резюме: "
                             + message_placeholders["resume_title"]
                         )
+                        if self.persona:
+                            msg = (
+                                "# PROFESSIONAL PROFILE\n\n"
+                                + self.persona
+                                + "\n\n"
+                                + msg
+                            )
                         logger.debug("prompt: %s", msg)
                         ai_resp = generate_with_self_assessment(
                             self.cover_letter_ai, msg

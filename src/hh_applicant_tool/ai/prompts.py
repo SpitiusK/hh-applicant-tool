@@ -7,6 +7,21 @@
 
 from __future__ import annotations
 
+def build_system_prompt(base_rules: str, persona: str) -> str:
+    """Подмешать persona.md в system prompt.
+
+    Пустой persona возвращает base_rules без изменений — регрессии нет
+    для пользователей без persona.md.
+    """
+    if not persona:
+        return base_rules
+    return (
+        base_rules
+        + "\n\n# PROFESSIONAL PROFILE (контекст для ответов от первого лица)\n\n"
+        + persona
+    )
+
+
 AI_RESPONSE_JSON_SUFFIX = """
 Ответь СТРОГО в формате JSON-объекта без пояснений и без markdown-обёртки.
 Структура:

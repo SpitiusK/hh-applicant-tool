@@ -21,6 +21,7 @@ from .context import (
     format_chat_history,
     scrub_em_dash,
 )
+from .prompts import build_system_prompt
 
 logger = logging.getLogger(__package__)
 
@@ -114,11 +115,17 @@ class ReplyResult:
 class ReplyAgent:
     """Single-pass агент для ответов в чатах работодателей."""
 
-    def __init__(self, claude: ChatClaude) -> None:
+    def __init__(
+        self, claude: ChatClaude, persona: str = ""
+    ) -> None:
         self.claude = claude
-        # Применяем наш системный промпт и разрешаем hh-get-* скилы
-        # Через append_system_prompt, чтобы не перетирать встроенный промпт CLI
-        self.claude.append_system_prompt = REPLY_SYSTEM_PROMPT
+        self.persona = persona
+        # Применяем наш системный промпт и разрешаем hh-get-* скилы.
+        # build_system_prompt подмешивает persona в конец base_rules; пустой
+        # persona возвращает base_rules без изменений — регрессий нет.
+        self.claude.append_system_prompt = build_system_prompt(
+            REPLY_SYSTEM_PROMPT, persona
+        )
         if not self.claude.allowed_tools:
             self.claude.allowed_tools = list(DEFAULT_ALLOWED_TOOLS)
 

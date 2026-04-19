@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Literal
 from ..ai.agent import ReplyAgent
 from ..ai.base import AIError
 from ..ai.claude import ChatClaude
+from ..ai.context import get_persona_context
 from ..ai.schema import AIResponse
 from ..api import ApiError, datatypes
 from ..approval import (
@@ -198,11 +199,19 @@ class Operation(BaseOperation):
         self.agenda_md = data_dir / "agenda.md"
         self.confirmations_jsonl = data_dir / "pending_confirmations.jsonl"
 
+        # persona.md (П.19) — подмешивается в system prompt ReplyAgent и
+        # в cover-letter prompt OpenAI-ветки.
+        self.persona = get_persona_context(
+            tool.config, tool.config_path
+        )
+
         # Агент Claude для структурированных ответов
         if self.use_claude and isinstance(
             self.cover_letter_ai, ChatClaude
         ):
-            self.reply_agent = ReplyAgent(self.cover_letter_ai)
+            self.reply_agent = ReplyAgent(
+                self.cover_letter_ai, persona=self.persona
+            )
         else:
             self.reply_agent = None
 
@@ -494,8 +503,16 @@ class Operation(BaseOperation):
                                 )
                             )
 
+                        persona_block = (
+                            "# PROFESSIONAL PROFILE\n\n"
+                            + self.persona
+                            + "\n\n"
+                            if self.persona
+                            else ""
+                        )
                         ai_query = (
-                            f"Вакансия: {placeholders['vacancy_name']}\n"
+                            persona_block
+                            + f"Вакансия: {placeholders['vacancy_name']}\n"
                             f"Работодатель: {placeholders['employer_name']}"
                             f"\n\nИстория переписки:\n"
                             + "\n".join(message_history)
