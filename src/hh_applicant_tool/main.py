@@ -186,6 +186,61 @@ class HHApplicantTool(MegaTool):
         user_cfg = self.config.get("approval", {}) or {}
         return {**self._APPROVAL_DEFAULTS, **user_cfg}
 
+    # Дефолты секции config["persona"] (П.16–П.19).
+    _PERSONA_DEFAULTS: dict[str, Any] = {
+        "path": None,
+        "source_reports_dir": None,
+    }
+
+    def get_persona_cfg(self) -> dict[str, Any]:
+        """persona-секция с дефолтами. Отсутствие секции → чистые дефолты."""
+        user_cfg = self.config.get("persona", {}) or {}
+        return {**self._PERSONA_DEFAULTS, **user_cfg}
+
+    # Дефолты секции config["events"] (П.22a/b/c, П.24).
+    _EVENTS_DEFAULTS: dict[str, Any] = {
+        "watch_interval_minutes": 15,
+        "timezone": "Europe/Moscow",
+        "calendar": {
+            "exporter": "ics",
+            "output_path": "data/calendar.ics",
+        },
+    }
+
+    def get_events_cfg(self) -> dict[str, Any]:
+        """events-секция. calendar-sub-dict deep-merge'ится (exporter /
+        output_path сохраняют дефолты, если пользователь задал только часть).
+        """
+        user_cfg = self.config.get("events", {}) or {}
+        merged: dict[str, Any] = {**self._EVENTS_DEFAULTS, **user_cfg}
+        user_cal = user_cfg.get("calendar") or {}
+        merged["calendar"] = {
+            **self._EVENTS_DEFAULTS["calendar"],
+            **user_cal,
+        }
+        return merged
+
+    # Дефолты секции config["messaging"] (П.12).
+    _MESSAGING_DEFAULTS: dict[str, Any] = {
+        "backend": "telegram",
+        "telegram": {
+            "bot_token": None,
+            "chat_id": None,
+            "allowed_user_id": None,
+        },
+    }
+
+    def get_messaging_cfg(self) -> dict[str, Any]:
+        """messaging-секция. telegram-sub-dict deep-merge."""
+        user_cfg = self.config.get("messaging", {}) or {}
+        merged: dict[str, Any] = {**self._MESSAGING_DEFAULTS, **user_cfg}
+        user_tg = user_cfg.get("telegram") or {}
+        merged["telegram"] = {
+            **self._MESSAGING_DEFAULTS["telegram"],
+            **user_tg,
+        }
+        return merged
+
     def _get_openai_proxies(self) -> dict[str, str]:
         openai_config = self.config.get("openai", {})
         proxy_url = self.openai_proxy_url or openai_config.get("proxy_url")
