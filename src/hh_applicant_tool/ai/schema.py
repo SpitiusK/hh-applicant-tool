@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -22,6 +24,22 @@ class AIResponse(BaseModel):
     question_for_user: str | None = None
     context_summary: str | None = None
     is_sentinel: bool = False
+
+
+class EventClassification(AIResponse):
+    """Классификация сообщения работодателя как event (П.22b).
+
+    Наследует AIResponse (answer/confidence/escalate/escalation_reason/
+    question_for_user/context_summary/is_sentinel) и добавляет поля
+    детекции события. Для sentinel-fallback вспомогательные поля
+    используют свои defaults (is_event=False, event_type=None, ...).
+    """
+
+    is_event: bool = False
+    event_type: Literal["interview", "offer", "deadline"] | None = None
+    when_iso: str | None = None
+    title: str = ""
+    notes: str = ""
 
 
 class TestSolution(BaseModel):
