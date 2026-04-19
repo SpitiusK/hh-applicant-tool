@@ -6,6 +6,7 @@ from .repositories.contacts import VacancyContactsRepository
 from .repositories.employer_sites import EmployerSitesRepository
 from .repositories.employers import EmployersRepository
 from .repositories.negotiations import NegotiationRepository
+from .repositories.pending_messages import PendingMessagesRepository
 from .repositories.resumes import ResumesRepository
 from .repositories.settings import SettingsRepository
 from .repositories.skipped_vacancies import SkippedVacanciesRepository
@@ -21,6 +22,7 @@ class StorageFacade:
         self.employer_sites = EmployerSitesRepository(conn)
         self.employers = EmployersRepository(conn)
         self.negotiations = NegotiationRepository(conn)
+        self.pending_messages = PendingMessagesRepository(conn)
         self.resumes = ResumesRepository(conn)
         self.settings = SettingsRepository(conn)
         self.skipped_vacancies = SkippedVacanciesRepository(conn)
