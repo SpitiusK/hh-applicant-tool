@@ -4,7 +4,42 @@
 """
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def get_persona_context(
+    config: dict[str, Any],
+    config_dir: Path | str,
+) -> str:
+    """Прочитать persona.md и вернуть его текст.
+
+    Путь берётся из `config["persona"]["path"]`, иначе — из
+    `<config_dir>/persona.md`. Если файла нет или прочитать не удалось —
+    возвращается пустая строка и WARNING в лог (вызывающий код должен
+    уметь работать с пустым persona).
+    """
+    persona_cfg = (config.get("persona") if config else {}) or {}
+    raw_path = persona_cfg.get("path")
+    if raw_path:
+        path = Path(raw_path)
+    else:
+        path = Path(config_dir) / "persona.md"
+
+    if not path.is_file():
+        logger.warning(
+            "persona: файл %s не найден, контекст будет пустым", path
+        )
+        return ""
+
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception as ex:
+        logger.warning("persona: не прочитать %s: %s", path, ex)
+        return ""
 
 
 def build_compact_candidate(user_data: dict) -> str:
