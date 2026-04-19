@@ -67,6 +67,44 @@ All `claude -p` invocations now route through `ChatClaude.complete()` / `.comple
 
 New `skipped_vacancies.reason` codes introduced this block: `test_no_strategy`, `ai_error`. Existing: `excluded_filter`, `ai_rejected`.
 
+### Approval loop (Block 2 rework, 2026-04-19)
+
+Two new SQLite tables queue the sync↔async boundary between operations and the Telegram bot:
+
+- `pending_messages` (`storage/queries/migrations/20260419_pending_messages.sql`): every draft action the AI wants to take. Columns cover routing (`messenger_type`, `messenger_message_id`), payload (`action_type ∈ {apply_vacancy, reply_employer, form_field}`, `draft_payload JSON`, `draft_history JSON`), state (`status ∈ {pending, approved, modified, rejected, dispatched, error}`, `iterations`), escalation metadata (`confidence`, `escalation_reason`, `question_for_user`, `context_summary`). Sole communication channel between cron-ops and the long-running bot — no IPC.
+- `ai_decisions` (`20260419_ai_decisions.sql`): audit log for every AI call. Critical field `is_sentinel` (mirrors `AIResponse.is_sentinel`) — tells deliberate escalation apart from a technical sentinel fallback, so the calibration signal stays clean. `operations/query.py` exposes `--ai-stats`, `--escalation-rate [DAYS]`, `--sentinel-rate [DAYS]`, `--flagged`.
+
+Approval policy lives in `src/hh_applicant_tool/approval.py`:
+
+- `should_escalate(ai_response, action_type, approval_cfg)` — single decision point. `mode=never` short-circuits to False, `mode=always` to True; `on_escalation` (default) fires on any of `escalate=True`, `confidence < threshold`, `action_type in always_escalate_actions`.
+- `persist_ai_decision(...)` writes an `ai_decisions` row; on `status='auto_dispatched'` it additionally rolls sanity sampling (`messaging/sanity.py`) and posts a retrospective summary to the user via MessengerClient.
+- `escalate_to_user(...)` creates a `pending_messages(status='pending')`, sends the inline-button message through MessengerClient, and stores `messenger_message_id` for later correlation.
+- `generate_with_self_assessment(ai_client, prompt)` wraps any AI call in `AIResponse`. Falls back to `complete()` when the backend raises `NotImplementedError` (keeps `ChatOpenAI` working until its `complete_json` is filled in).
+
+CLI flag `--approval-mode={never|on_escalation|always}` on `apply-vacancies` and `reply-employers`. Default resolves from `config["approval"]` overlaid on `_APPROVAL_DEFAULTS` (`tool.get_approval_defaults()` in `main.py`). Defaults: `mode=on_escalation`, `confidence_threshold=0.7`, `always_escalate_actions=[]`, `max_iterations=3`, `sanity_frequency=20`.
+
+Messaging is a pluggable abstraction (`src/hh_applicant_tool/messaging/`):
+
+- `base.py` — `MessengerClient` ABC + `ApprovalRequest` / `IncomingCommand` dataclasses.
+- `telegram_client.py` — aiogram 3 implementation. One module-level long-lived event loop + single `Bot` instance, reused across every sync `send_*` call via `asyncio.run_coroutine_threadsafe` (no `asyncio.run()` per message — critical for the `apply-vacancies` hot loop). Long-running bot Dispatcher lives on a separate `asyncio.run()` inside `operations/run_messenger_bot.py`. Handlers: approve/reject (`update_status`), modify (FSM — awaits follow-up text, calls `messaging/modify_handler.py::handle_modify` via `asyncio.to_thread` so the 10–60 s `claude -p` call doesn't block the aiogram loop), commands `/start /stats /pending /events /skipped /sanity /flag`.
+- `factory.py` — `get_messenger_client(config, storage_facade)` dispatched by `config["messaging"]["backend"]`. `aiogram` import is lazy so environments without Telegram don't pay for it.
+
+New ops:
+
+- `operations/send_approved.py` (cron) — drains `pending_messages` with `status='approved'` into real HH API calls (`POST /negotiations`, `POST /messages`). Failures go to `status='error'` and notify the user. `--dry-run` for inspection. `form_field` is intentionally a stub here (lands in Block 3 П.21).
+- `operations/run_messenger_bot.py` — long-running bot service. Shipped as its own container in `docker-compose.yml` (`messenger-bot`); user adds `network_mode: "service:wg-amnezia"` in `docker-compose.override.yml` for Telegram access from RF.
+
+New deps in `pyproject.toml`: `aiogram ^3.4`, `asgiref ^3.7` (explicit, not through extras).
+
+Config:
+```json
+"messaging": {"backend": "telegram", "telegram": {"bot_token": "…", "chat_id": 123, "allowed_user_id": 123}}
+"approval": {"mode": "on_escalation", "confidence_threshold": 0.7, "always_escalate_actions": [], "max_iterations": 3, "sanity_frequency": 20}
+```
+Old `form_user_data` / `claude` sections unchanged. `excluded_*` sections untouched by this block (parallel session owns them).
+
+`config/config.json` with the bot token stays in `.gitignore` (pattern already in place since the OAuth token).
+
 ### AI backends (`src/hh_applicant_tool/ai/`)
 
 Two parallel `@dataclass` backends share the same `complete(message: str) -> str` interface (duck-typed, no ABC):
