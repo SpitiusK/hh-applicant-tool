@@ -986,6 +986,19 @@ hh-applicant-tool settings disable_version_check true
 
 ---
 
+## Agent flow
+
+После рефакторинга `sprint/agent-rework-2026-04-17` инструмент работает
+как self-assessing агент: AI оценивает свою уверенность, автономно
+исполняет уверенные действия и эскалирует непонятные в Telegram
+(approve / modify / reject). Параллельно `watch-events` извлекает
+события из чатов (интервью, офферы, ТЗ) и экспортирует их в `.ics`
+или markdown-agenda.
+
+Подробнее со схемами — [docs/agent_flow.md](docs/agent_flow.md).
+
+---
+
 ## Связанные проекты
 
 - [Приложение под Android](https://github.com/s3rgeym/hh-resume-automate)
