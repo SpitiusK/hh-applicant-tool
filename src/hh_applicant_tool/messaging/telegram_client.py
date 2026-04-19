@@ -35,11 +35,13 @@ class TelegramClient(MessengerClient):
         chat_id: int | str | None,
         allowed_user_id: int | None,
         storage_facade: Any,
+        config: dict[str, Any] | None = None,
     ) -> None:
         self._bot_token = bot_token
         self._chat_id = chat_id
         self._allowed_user_id = allowed_user_id
         self._storage = storage_facade
+        self._config: dict[str, Any] = config or {}
 
         # Long-lived sync-loop в отдельном thread (создаётся лениво).
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -168,14 +170,23 @@ class TelegramClient(MessengerClient):
         """
         from aiogram import Bot, Dispatcher, F, Router
         from aiogram.filters import Command
+        from aiogram.fsm.context import FSMContext
+        from aiogram.fsm.state import State, StatesGroup
+        from aiogram.fsm.storage.memory import MemoryStorage
         from aiogram.types import CallbackQuery, Message
 
+        from .modify_handler import handle_modify
+
+        class ModifyFSM(StatesGroup):
+            awaiting_comment = State()
+
         bot = Bot(token=self._bot_token)
-        dp = Dispatcher()
+        dp = Dispatcher(storage=MemoryStorage())
         router = Router()
 
         allowed_user_id = self._allowed_user_id
         storage = self._storage
+        config = self._config
 
         def _is_allowed(user_id: int | None) -> bool:
             return (
@@ -288,15 +299,94 @@ class TelegramClient(MessengerClient):
                 await cq.message.edit_reply_markup(reply_markup=None)
 
         @router.callback_query(F.data.startswith("modify:"))
-        async def _on_modify(cq: CallbackQuery) -> None:
+        async def _on_modify(cq: CallbackQuery, state: FSMContext) -> None:
             if not _is_allowed(cq.from_user.id if cq.from_user else None):
                 await cq.answer("not authorized", show_alert=False)
                 return
-            # FSM для приёма follow-up текста — реализуется в П.14.
-            await cq.answer(
-                "Modify-поток ожидает реализации П.14",
-                show_alert=True,
+            draft_id = int((cq.data or "modify:0").split(":", 1)[1])
+            await state.set_state(ModifyFSM.awaiting_comment)
+            await state.update_data(draft_id=draft_id)
+            await cq.answer("Жду коррекцию")
+            if cq.message is not None:
+                await cq.message.answer(
+                    f"✏️ Пришли коррекцию для pm#{draft_id} одним сообщением "
+                    "(или /cancel чтобы отменить)."
+                )
+
+        @router.message(Command("cancel"), ModifyFSM.awaiting_comment)
+        async def _on_cancel_modify(
+            message: Message, state: FSMContext
+        ) -> None:
+            if not _is_allowed(
+                message.from_user.id if message.from_user else None
+            ):
+                return
+            await state.clear()
+            await message.answer("Отмена Modify-ввода.")
+
+        @router.message(ModifyFSM.awaiting_comment)
+        async def _on_modify_comment(
+            message: Message, state: FSMContext
+        ) -> None:
+            if not _is_allowed(
+                message.from_user.id if message.from_user else None
+            ):
+                return
+            data = await state.get_data()
+            draft_id = data.get("draft_id")
+            await state.clear()
+
+            if not draft_id:
+                await message.answer("не нашёл draft_id, попробуй снова")
+                return
+
+            user_comment = (message.text or "").strip()
+            if not user_comment:
+                await message.answer("пустой комментарий — пропускаю")
+                return
+
+            repo = _pending_repo()
+            if repo is None:
+                await message.answer(
+                    "pending_messages недоступно"
+                )
+                return
+
+            try:
+                # handle_modify — sync, но мы внутри async-handler'а;
+                # кладём в threadpool, чтобы не блокировать loop на
+                # длинном claude -p вызове (10-60s).
+                result = await asyncio.to_thread(
+                    handle_modify,
+                    storage,
+                    int(draft_id),
+                    user_comment,
+                    config,
+                    messenger=self,
+                )
+            except Exception as ex:
+                logger.exception(
+                    "handle_modify упал для pm#%s", draft_id
+                )
+                await message.answer(f"error: {ex}")
+                return
+
+            status = result.get("status")
+            iteration = result.get("iteration")
+            reason = result.get("reason")
+            summary = (
+                f"Modify pm#{draft_id}: status={status}, "
+                f"iter={iteration}, reason={reason}"
             )
+            if status == "approved":
+                summary = f"✅ {summary}\nOтправится через send-approved."
+            elif status == "rejected":
+                summary = f"❌ {summary}"
+            elif status == "re_escalated":
+                summary = (
+                    f"♻️ {summary}\nНовый запрос с иттерацией выше."
+                )
+            await message.answer(summary)
 
         dp.include_router(router)
         await dp.start_polling(bot)

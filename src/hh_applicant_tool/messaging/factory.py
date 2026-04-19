@@ -39,6 +39,7 @@ def get_messenger_client(
             chat_id=tg.get("chat_id"),
             allowed_user_id=tg.get("allowed_user_id"),
             storage_facade=storage_facade,
+            config=config,
         )
 
     raise ValueError(f"unsupported messenger backend: {backend}")
