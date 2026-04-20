@@ -309,7 +309,15 @@ class HHApplicantTool(MegaTool):
 
     @cached_property
     def db(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        # check_same_thread=False: bot FSM-handler выполняет handle_modify
+        # в отдельном thread через asyncio.to_thread (чтобы длинный
+        # `claude -p` не блокировал aiogram loop). Без этой опции
+        # SQLite бросает "SQLite objects created in a thread can only
+        # be used in that same thread". SQLite с пакетным Python-модулем
+        # сериализует запросы через внутренний Lock, так что thread-safe
+        # для последовательных вызовов. Для параллельных — WAL-режим:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL;")
         return conn
 
     @cached_property
