@@ -193,8 +193,10 @@ class Operation(BaseOperation):
             self.cover_letter_ai = None
         self.period = args.period
 
-        # Пути для журналов событий и подтверждений
-        data_dir = Path(tool.config_dir) / "data"
+        # Пути для журналов событий и подтверждений.
+        # tool.config_dir — argparse -c (может быть None), tool.config_path —
+        # резолвленный путь с CONFIG_DIR env / default.
+        data_dir = tool.config_path / "data"
         self.events_jsonl = data_dir / "scheduled_events.jsonl"
         self.agenda_md = data_dir / "agenda.md"
         self.confirmations_jsonl = data_dir / "pending_confirmations.jsonl"
@@ -436,12 +438,29 @@ class Operation(BaseOperation):
                         if should_escalate(
                             ai_resp, "reply_employer", self.approval_cfg
                         ):
+                            # Последние 3 сообщения работодателя — для UX
+                            # approval-card. Не больше 600 chars каждое.
+                            _last_emp_msgs = []
+                            for _m in raw_messages[-10:]:
+                                if (_m.get("author") or {}).get(
+                                    "participant_type"
+                                ) == "employer":
+                                    _last_emp_msgs.append(
+                                        (_m.get("text") or "")[:600]
+                                    )
+                            _last_emp_msgs = _last_emp_msgs[-3:]
                             draft_payload = {
                                 "nid": nid,
                                 "endpoint": f"/negotiations/{nid}/messages",
                                 "message": send_message,
+                                "vacancy_id": vacancy.get("id"),
                                 "vacancy_name": placeholders.get("vacancy_name"),
+                                "vacancy_url": vacancy.get("alternate_url"),
                                 "employer_name": placeholders.get("employer_name"),
+                                "employer_id": employer.get("id"),
+                                "employer_url": employer.get("alternate_url"),
+                                "chat_url": f"https://hh.ru/applicant/negotiations?vacancyId={vacancy.get('id')}",
+                                "last_employer_messages": _last_emp_msgs,
                             }
                             escalate_to_user(
                                 self.tool.storage,
@@ -542,12 +561,29 @@ class Operation(BaseOperation):
                         if should_escalate(
                             ai_resp, "reply_employer", self.approval_cfg
                         ):
+                            # Последние 3 сообщения работодателя — для UX
+                            # approval-card. Не больше 600 chars каждое.
+                            _last_emp_msgs = []
+                            for _m in raw_messages[-10:]:
+                                if (_m.get("author") or {}).get(
+                                    "participant_type"
+                                ) == "employer":
+                                    _last_emp_msgs.append(
+                                        (_m.get("text") or "")[:600]
+                                    )
+                            _last_emp_msgs = _last_emp_msgs[-3:]
                             draft_payload = {
                                 "nid": nid,
                                 "endpoint": f"/negotiations/{nid}/messages",
                                 "message": send_message,
+                                "vacancy_id": vacancy.get("id"),
                                 "vacancy_name": placeholders.get("vacancy_name"),
+                                "vacancy_url": vacancy.get("alternate_url"),
                                 "employer_name": placeholders.get("employer_name"),
+                                "employer_id": employer.get("id"),
+                                "employer_url": employer.get("alternate_url"),
+                                "chat_url": f"https://hh.ru/applicant/negotiations?vacancyId={vacancy.get('id')}",
+                                "last_employer_messages": _last_emp_msgs,
                             }
                             escalate_to_user(
                                 self.tool.storage,

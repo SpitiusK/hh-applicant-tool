@@ -412,6 +412,30 @@ class TelegramClient(MessengerClient):
                 )
                 return
 
+            # Чтобы юзер видел что бот жив пока крутится claude -p
+            # (10-60 сек), шлём send_chat_action='typing' каждые 4 сек —
+            # Telegram держит индикатор «печатает» около 5 сек, поэтому
+            # цикл с запасом.
+            _stop_typing = asyncio.Event()
+
+            async def _typing_loop() -> None:
+                try:
+                    chat_id = message.chat.id
+                except Exception:
+                    return
+                while not _stop_typing.is_set():
+                    try:
+                        await bot.send_chat_action(chat_id, "typing")
+                    except Exception:
+                        pass
+                    try:
+                        await asyncio.wait_for(
+                            _stop_typing.wait(), timeout=4.0
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+
+            typing_task = asyncio.create_task(_typing_loop())
             try:
                 # handle_modify — sync, но мы внутри async-handler'а;
                 # кладём в threadpool, чтобы не блокировать loop на
@@ -428,8 +452,16 @@ class TelegramClient(MessengerClient):
                 logger.exception(
                     "handle_modify упал для pm#%s", draft_id
                 )
+                _stop_typing.set()
+                await typing_task
                 await message.answer(f"error: {ex}")
                 return
+            finally:
+                _stop_typing.set()
+            try:
+                await typing_task
+            except Exception:
+                pass
 
             status = result.get("status")
             iteration = result.get("iteration")

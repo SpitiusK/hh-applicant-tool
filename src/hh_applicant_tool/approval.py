@@ -214,7 +214,8 @@ def _format_approval_text(
         "⚠️ <b>Нужен твой ввод</b>",
         f"Действие: <code>{action_type}</code>",
     ]
-    # Для apply_vacancy полезно сразу показать на какую вакансию и к кому.
+    # Шапка: вакансия / работодатель / ссылки. Одинаковая для apply_vacancy
+    # и reply_employer — оба несут vacancy_name/employer_name/url в payload.
     vacancy_name = draft_payload.get("vacancy_name")
     if vacancy_name:
         lines.append(f"Вакансия: <b>{vacancy_name}</b>")
@@ -223,7 +224,19 @@ def _format_approval_text(
         lines.append(f"Работодатель: {employer_name}")
     vacancy_url = draft_payload.get("vacancy_url")
     if vacancy_url:
-        lines.append(f"Ссылка: {vacancy_url}")
+        lines.append(f"Вакансия: {vacancy_url}")
+    chat_url = draft_payload.get("chat_url")
+    if chat_url:
+        lines.append(f"Чат: {chat_url}")
+    last_msgs = draft_payload.get("last_employer_messages") or []
+    if last_msgs:
+        lines.append("")
+        lines.append("<i>Последние сообщения работодателя:</i>")
+        for _m in last_msgs:
+            _preview = (_m or "").strip().replace("\n", " ")
+            if len(_preview) > 350:
+                _preview = _preview[:350] + "…"
+            lines.append(f"• {_preview}")
 
     if ai_response.context_summary:
         lines.append(f"Контекст: {ai_response.context_summary}")
