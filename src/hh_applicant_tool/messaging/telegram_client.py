@@ -439,14 +439,47 @@ class TelegramClient(MessengerClient):
                 f"iter={iteration}, reason={reason}"
             )
             if status == "approved":
-                summary = f"✅ {summary}\nOтправится через send-approved."
-            elif status == "rejected":
-                summary = f"❌ {summary}"
-            elif status == "re_escalated":
                 summary = (
+                    f"✅ {summary}\n"
+                    "Отправится через send-approved.\n\n"
+                    "<b>Финальный текст:</b>"
+                )
+                await message.answer(summary, parse_mode="HTML")
+                # Подтянуть свежий draft_payload и показать что улетит,
+                # чтобы юзер увидел что именно auto-approved (не просто
+                # "✅ approved" в вакууме).
+                try:
+                    pm = repo.get_by_id(int(draft_id))
+                    payload = (pm.draft_payload or {}) if pm else {}
+                    body = (payload.get("message") or payload.get("answer") or "").strip()
+                    if body:
+                        # Telegram limit ~4096; даём до 3500 в pre.
+                        await message.answer(
+                            f"<pre>{body[:3500]}</pre>",
+                            parse_mode="HTML",
+                        )
+                    else:
+                        await message.answer(
+                            "<i>пусто (вакансия без сопроводительного — отправится клик «Откликнуться»)</i>",
+                            parse_mode="HTML",
+                        )
+                except Exception as ex:
+                    logger.exception(
+                        "не удалось показать финальный текст pm#%s: %s",
+                        draft_id,
+                        ex,
+                    )
+            elif status == "rejected":
+                await message.answer(f"❌ {summary}")
+            elif status == "re_escalated":
+                # При re-escalation приходит новый approval-card отдельным
+                # сообщением (от escalate_to_user), здесь только короткий
+                # summary чтобы юзер видел итерацию и причину.
+                await message.answer(
                     f"♻️ {summary}\nНовый запрос с иттерацией выше."
                 )
-            await message.answer(summary)
+            else:
+                await message.answer(summary)
 
         dp.include_router(router)
         await dp.start_polling(bot)
