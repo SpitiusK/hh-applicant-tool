@@ -208,11 +208,23 @@ def _format_approval_text(
 ) -> str:
     answer = ai_response.answer
     answer_str = answer if isinstance(answer, str) else str(answer)
-    preview = draft_payload.get("preview") or answer_str
+    preview = (draft_payload.get("preview") or answer_str or "").strip()
+
     lines = [
         "⚠️ <b>Нужен твой ввод</b>",
         f"Действие: <code>{action_type}</code>",
     ]
+    # Для apply_vacancy полезно сразу показать на какую вакансию и к кому.
+    vacancy_name = draft_payload.get("vacancy_name")
+    if vacancy_name:
+        lines.append(f"Вакансия: <b>{vacancy_name}</b>")
+    employer_name = draft_payload.get("employer_name")
+    if employer_name:
+        lines.append(f"Работодатель: {employer_name}")
+    vacancy_url = draft_payload.get("vacancy_url")
+    if vacancy_url:
+        lines.append(f"Ссылка: {vacancy_url}")
+
     if ai_response.context_summary:
         lines.append(f"Контекст: {ai_response.context_summary}")
     if ai_response.question_for_user:
@@ -226,7 +238,13 @@ def _format_approval_text(
     )
     lines.append("")
     lines.append("Предложение AI:")
-    lines.append(f"<pre>{preview[:1500]}</pre>")
+    if preview:
+        lines.append(f"<pre>{preview[:1500]}</pre>")
+    else:
+        # Пустой letter означает, что вакансия не требует сопроводительного
+        # (hh.ru response_letter_required=False и --force-message не задан).
+        # POST /negotiations пойдёт с пустым message — по сути «клик Откликнуться».
+        lines.append("<i>не требуется (вакансия без сопроводительного)</i>")
     return "\n".join(lines)
 
 
