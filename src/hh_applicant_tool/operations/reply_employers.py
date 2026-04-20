@@ -715,10 +715,13 @@ class Operation(BaseOperation):
     _FORM_DOMAINS = (
         "forms.google.com",
         "docs.google.com/forms",
+        "forms.gle",          # Google Forms shortlink (редирект на docs.google.com/forms/*)
         "forms.yandex.ru",
         "typeform.com",
         "surveymonkey.com",
         "anketolog.ru",
+        "airtable.com/app",   # Airtable forms (встречается в стартапах)
+        "notion.so",          # Notion-формы
     )
 
     def _get_messenger(self):
