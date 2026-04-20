@@ -47,6 +47,7 @@ logger = logging.getLogger(__package__)
 class Namespace(BaseNamespace):
     reply_message: str
     max_pages: int
+    max_replies: int
     only_invitations: bool
     dry_run: bool
     use_ai: bool
@@ -85,6 +86,12 @@ class Operation(BaseOperation):
             type=int,
             default=25,
             help="Максимальное количество страниц для проверки",
+        )
+        parser.add_argument(
+            "--max-replies",
+            type=int,
+            default=0,
+            help="Жёсткий лимит обработанных чатов за прогон (POST или эскалация). 0 = без лимита.",
         )
         parser.add_argument(
             "-oi",
@@ -175,6 +182,8 @@ class Operation(BaseOperation):
             "reply_message"
         )
         self.max_pages = args.max_pages
+        self.max_replies = int(getattr(args, "max_replies", 0) or 0)
+        self._reply_count = 0
         self.dry_run = args.dry_run
         self.only_invitations = args.only_invitations
 
@@ -279,6 +288,18 @@ class Operation(BaseOperation):
         }
 
         for negotiation in self.tool.get_negotiations():
+            if (
+                self.max_replies
+                and self._reply_count >= self.max_replies
+            ):
+                logger.info(
+                    "Достигнут лимит max_replies=%d — прекращаю обход.",
+                    self.max_replies,
+                )
+                print(
+                    f"🛑 Лимит {self.max_replies} чатов обработан"
+                )
+                break
             try:
                 # try:
                 #     self.tool.storage.negotiations.save(negotiation)
@@ -470,6 +491,7 @@ class Operation(BaseOperation):
                                 ai_response=ai_resp,
                                 approval_cfg=self.approval_cfg,
                             )
+                            self._reply_count += 1
                             logger.info(
                                 "reply эскалирован на approval: chat %s", nid
                             )
@@ -593,6 +615,7 @@ class Operation(BaseOperation):
                                 ai_response=ai_resp,
                                 approval_cfg=self.approval_cfg,
                             )
+                            self._reply_count += 1
                             logger.info(
                                 "reply эскалирован на approval (openai): chat %s",
                                 nid,
@@ -678,6 +701,7 @@ class Operation(BaseOperation):
                         message=send_message,
                         delay=random.uniform(1, 3),
                     )
+                    self._reply_count += 1
                     logger.info(
                         "📨 Отправлено для %s", vacancy["alternate_url"]
                     )
