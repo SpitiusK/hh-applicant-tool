@@ -109,6 +109,26 @@ def _build_regeneration_prompt(
     )
     lines.append(user_comment)
     lines.append("")
+    # Подсказка про доступные hh-get-* скилы: Claude сам решит когда
+    # вызвать для уточнения данных. Payload уже содержит vacancy_description,
+    # но key_skills / полный контекст работодателя можно добрать через CLI.
+    vacancy_id = payload.get("vacancy_id")
+    resume_id = payload.get("resume_id")
+    employer_id = (payload.get("employer") or {}).get("id") if isinstance(payload.get("employer"), dict) else None
+    lines.append(
+        "При необходимости уточнить данные доступны bash-команды (вызывай только если реально нужно):"
+    )
+    if vacancy_id:
+        lines.append(f"  hh-get-vacancy {vacancy_id}  — полная вакансия (description, key_skills, schedule, experience, employer)")
+    if resume_id:
+        lines.append(f"  hh-get-resume {resume_id}   — твоё резюме полностью (места работы, навыки, образование)")
+    if employer_id:
+        lines.append(f"  hh-get-employer {employer_id}  — профиль работодателя (описание, отрасль, сайт)")
+    else:
+        lines.append("  hh-get-employer <id>         — профиль работодателя (id возьми из hh-get-vacancy)")
+    lines.append("  hh-search-similar <vacancy_id> — похожие вакансии (для понимания рынка)")
+    lines.append("")
+
     lines.append(
         "Перегенерируй ответ с учётом коррекции и professional profile. "
         "Пиши от первого лица, без AI-tells. Сохрани тон и стиль. "
@@ -125,12 +145,25 @@ def _get_ai_client(
     Единый бэкенд — Claude (на нём уже построен approval-loop,
     complete_json поддерживает AIResponse через П.6). OpenAI-путь
     для modify не задействован — это осознанный narrow scope.
+
+    Подключаем hh-get-* CLI как allowed_tools, чтобы Claude мог
+    самостоятельно подтянуть свежие данные на modify-итерации:
+    полное описание вакансии, профиль работодателя, своё резюме.
+    Скилы зарегистрированы в pyproject.toml.scripts и доступны в PATH
+    контейнера. Statefull payload (vacancy_description в draft_payload)
+    остаётся как fallback для случаев когда AI не вызвал инструмент.
     """
     claude_cfg = config.get("claude", {})
     return ChatClaude(
         model=claude_cfg.get("model"),
         timeout=claude_cfg.get("timeout", 120.0),
         rate_limit=claude_cfg.get("rate_limit", 10),
+        allowed_tools=[
+            "Bash(hh-get-vacancy:*)",
+            "Bash(hh-get-resume:*)",
+            "Bash(hh-get-employer:*)",
+            "Bash(hh-search-similar:*)",
+        ],
     )
 
 
