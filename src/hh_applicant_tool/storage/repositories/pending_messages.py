@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+from dataclasses import fields as dataclass_fields
 from datetime import datetime
 from typing import Any, Iterator
 
+from ...utils import json as json_utils
 from ..models.pending_message import PendingMessageModel
 from .base import BaseRepository
 from .errors import wrap_db_errors
+
+
+_MODEL_FIELDS = {f.name: f for f in dataclass_fields(PendingMessageModel)}
+
+
+def _encode_field(name: str, value: Any) -> Any:
+    """Конвертация dict/list в JSON для store_json-полей (draft_payload,
+    draft_history) — без этого SQLite падает на `Error binding parameter`.
+    to_db() делает то же в create(), но update() биндит **kwargs напрямую
+    и без этого helper'а."""
+    mf = _MODEL_FIELDS.get(name)
+    if mf is None:
+        return value
+    if mf.metadata.get("store_json") and not isinstance(value, (str, bytes)):
+        if value is None:
+            return None
+        return json_utils.dumps(value)
+    return value
 
 
 class PendingMessagesRepository(BaseRepository):
@@ -69,7 +89,7 @@ class PendingMessagesRepository(BaseRepository):
         if not fields:
             return
         assignments = ", ".join(f"{k} = :{k}" for k in fields)
-        params = dict(fields)
+        params = {k: _encode_field(k, v) for k, v in fields.items()}
         params["__pk__"] = pk
         self.conn.execute(
             f"UPDATE {self.table_name} SET {assignments} WHERE id = :__pk__;",
