@@ -41,6 +41,14 @@ class ChatClaude:
     # количество запросов в минуту (0 = отключено)
     rate_limit: int = 10
 
+    # Доп. plugin-директории, передаются как --plugin-dir.
+    # Workaround для контейнера: хостовский installed_plugins.json подкидывает
+    # Windows-пути → marketplace plugins не находятся. Передаём прямой путь
+    # к каталогу плагина (например, /home/docker/.claude/plugins/marketplaces/
+    # claude-plugins-official/external_plugins/playwright) — Claude CLI
+    # подхватывает session-only.
+    plugin_dirs: list[str] = field(default_factory=list)
+
     # Внутренние поля
     _previous_request_time: float = field(
         default=0.0, init=False
@@ -85,6 +93,8 @@ class ChatClaude:
                 "--allowed-tools",
                 " ".join(self.allowed_tools),
             ]
+        for pd in self.plugin_dirs:
+            cmd += ["--plugin-dir", pd]
         return cmd
 
     def complete(self, message: str) -> str:

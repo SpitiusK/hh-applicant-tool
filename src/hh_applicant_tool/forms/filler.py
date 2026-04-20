@@ -44,13 +44,30 @@ class FormFiller:
     _reviewer_claude: ChatClaude = field(init=False, repr=False)
     _submit_claude: ChatClaude = field(init=False, repr=False)
 
+    # Workaround для контейнера: хостовский installed_plugins.json подкидывает
+    # Windows-пути → playwright marketplace plugin не находится. Передаём
+    # абсолютный путь к каталогу плагина через --plugin-dir, тогда Claude CLI
+    # подхватывает session-only без marketplace-резолва.
+    # На host'е путь другой — через CONFIG_DIR можно переопределить.
+    playwright_plugin_dir: str = (
+        "/home/docker/.claude/plugins/marketplaces/"
+        "claude-plugins-official/external_plugins/playwright"
+    )
+
     def __post_init__(self) -> None:
         tool_scope: list[str] = []  # allowed_tools перекрываются подпиской
+        # Filler и submit нуждаются в Playwright. Reviewer — нет.
+        plugin_dirs = (
+            [self.playwright_plugin_dir]
+            if self.playwright_plugin_dir
+            else []
+        )
         self._filler_claude = ChatClaude(
             model=self.model,
             timeout=self.timeout,
             rate_limit=self.rate_limit,
             allowed_tools=tool_scope,
+            plugin_dirs=plugin_dirs,
         )
         self._reviewer_claude = ChatClaude(
             model=self.model,
@@ -62,6 +79,7 @@ class FormFiller:
             timeout=self.timeout,
             rate_limit=self.rate_limit,
             allowed_tools=tool_scope,
+            plugin_dirs=plugin_dirs,
         )
 
     def fill_form(
