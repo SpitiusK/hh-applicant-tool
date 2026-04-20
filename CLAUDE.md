@@ -128,6 +128,61 @@ Three new pieces round out the agent: a static persona injected into every gener
 
 **New CLI this block**: `generate-persona` (`persona-gen`), `watch-events` (`events-watch`), `export-events` (`export`). Added alongside block-2 ops (`send-approved` / `run-messenger-bot`).
 
+### Post-block-3 hotfixes (2026-04-20, real-run hardening)
+
+Verified against the live hh.ru account; the sprint-end code shipped working but did not survive first-contact. Changes below are on `sprint/agent-rework-2026-04-17` but **not yet pushed**.
+
+**apply-vacancies**:
+- Template-letter path (no `--use-ai`, no `cover_letter_ai`) now goes through `should_escalate` with a synthetic `AIResponse(answer=letter, confidence=0.95, escalate=False)`. Before this the `--approval-mode=always` / `always_escalate_actions` config did nothing when letter came from `rand_text(letter.txt)` — POST flew directly.
+- `self.max_responses` was a decorative Namespace field with no reader. Now `_processed_count` increments on every escalate/POST/test-solve; the loop breaks at the top of each iteration when the cap is hit.
+- Escalation `draft_payload` carries the full hh.ru vacancy description (via `_fetch_full_description`, capped at 8 KB) plus employer / salary / experience / schedule — otherwise modify-regen runs with only title and URL and asks the user "пришли требования вакансии".
+
+**reply-employers**:
+- New `--max-replies N` flag (default 0 = unlimited), counter on escalate + `POST /messages`. Prevents TG flood in `--approval-mode=always`.
+- `draft_payload` for `action_type="reply_employer"` now includes `vacancy_url`, `chat_url` (hh.ru `/applicant/negotiations?vacancyId=…`), `employer_id`, `last_employer_messages` (last ≤3 employer turns, 600-char trim each).
+- Journal directory fixed: previously `tool.config_path / "data"` which collided with the SQLite DB file `CONFIG_DIR/data`. Now `CONFIG_DIR/journal/`.
+
+**messaging / approval**:
+- `TelegramClient._is_allowed` flipped fail-closed — `allowed_user_id=None` now rejects everyone (with a WARN log), not the other way around.
+- `_format_approval_text` shows vacancy name, employer, vacancy URL, chat URL, and a bullet-list of last employer messages for `reply_employer`. Empty cover letter prints `не требуется (вакансия без сопроводительного)` instead of an empty `<pre>`.
+- FSM Modify handler wraps the blocking `handle_modify` in an `asyncio.create_task` that pings `send_chat_action("typing")` every 4 s so the user sees "bot is typing" during the 10–60 s `claude -p` spin.
+- After Modify auto-approves (new confidence ≥ threshold), bot posts the final draft body in a `<pre>` block so the user actually sees what's about to be dispatched instead of a bare `✅ status=approved`.
+
+**storage**:
+- `sqlite3.connect(..., check_same_thread=False)` + `PRAGMA journal_mode=WAL`. Modify-handler runs inside `asyncio.to_thread` and was blowing up with "SQLite objects created in a thread can only be used in that same thread".
+- `PendingMessagesRepository.update` now JSON-encodes `mapped(store_json=True)` fields (`draft_payload`, `draft_history`). `create()` did this via `to_db()`; `update()` bound `**kwargs` raw and SQLite choked on `dict`.
+
+**modify_handler**:
+- Regeneration prompt now prepends the persona (was regenerating in a vacuum before).
+- `ChatClaude` for modify runs with `allowed_tools=["Bash(hh-get-vacancy:*)", ...]` plus a prompt cheatsheet listing concrete `vacancy_id`/`resume_id`. Claude can pull live data from hh.ru during regen instead of relying solely on the statefull draft_payload.
+
+**ReplyAgent system prompt (`ai/agent.py`)**:
+- Dropped the "уверенно собираю telegram-ботов" fabrication from `<capabilities>`.
+- New `<framing_rules>` block: **forbids openers starting with "нет прямого опыта" / "не работал с" / "не знаком с"** (explicit ban list + rewrite examples). Forbids но/зато/однако after a denial. If the match is genuinely bad → `action="skip"` rather than apologetic reply.
+- Separate "no lying about completed actions" section: agent only sends chat text, so no past-tense "заполнил форму" / "перешёл по ссылке" / "отправил документ" — always future/present tense or add a confirmation to the response schema.
+
+**forms**:
+- `_FORM_DOMAINS` adds `forms.gle` (Google Forms shortlink), `airtable.com/app`, `notion.so`.
+- `ChatClaude` gains `plugin_dirs: list[str]` → appended as `--plugin-dir <path>`. Workaround: host's `.claude/plugins/installed_plugins.json` is bind-mounted into the container with Windows paths (`C:\\Users\\…`), so marketplace plugin resolution fails. Passing the absolute Linux path `/home/docker/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/playwright` via `--plugin-dir` loads the plugin session-only, bypassing the resolver.
+- `FormFiller` now ships `allowed_tools=["mcp__playwright__*", "mcp__plugin_playwright_playwright__*"]` (both slug delimiter variants) to filler/submit agents — without this Claude CLI denies `browser_navigate` and filler returns prose "разрешите browser_navigate" instead of JSON.
+
+**config changes** (in `config/config.json`, gitignored):
+- `messaging.telegram.chat_id` + `allowed_user_id` = `7743614483` (user @SeptiusK).
+- `approval.mode = "never"` for autonomous overnight run — skips all escalation and posts directly. Reset to `on_escalation` for normal use.
+- `form_user_data` cleaned from earlier drift: `current_company`, `experience_summary`, `education` (ИрИТ РТФ Info Security, not Electromechanics), `additional_education`, `skills`, `custom_answers.{Ваш опыт работы, Ваши сильные стороны}` all rewritten against the actual hh.ru resume (`hh-get-resume eea3c5a2ff…`).
+- New static file `config/<profile>/persona.md` (~10 KB, gitignored) generated from the user's marketing reports in the sibling `okami-reports` repo, read by `get_persona_context` into every reply/cover-letter system prompt.
+
+**crontab** (enabled previously-commented jobs):
+- `reply-employers --use-claude --fill-forms` hourly, round the clock.
+- `clear-negotiations -d` every 2 hours (removed a typo — it was `python -m hh-applicant-tool` with a dash, now `hh_applicant_tool`).
+
+**Known gaps (still on the P0 list, not in this hotfix batch)**:
+- `send-approved` for `action_type="form_field"` is a stub — approving a form escalation in TG marks pm as approved but nothing submits the form.
+- `apply-vacancies` `_get_vacancy_tests` regex-scrapes hh.ru HTML looking for `,"vacancyTests":` — hh changed the layout, pages without that marker now throw "tests not found". Vacancies with tests are silently skipped.
+- AI vacancy filter `_ask_ai_suitability` still returns `bool | None` and uses `ChatOpenAI`. User has no OpenAI configured — to enable the filter it needs porting to ChatClaude + `AIResponse`.
+- No salary-floor check in `should_escalate`; auto-dispatch doesn't compare vacancy salary against `form_user_data.salary_expectation`.
+- Daily-digest bot message not implemented — user has to `/stats` manually.
+
 ### AI backends (`src/hh_applicant_tool/ai/`)
 
 Two parallel `@dataclass` backends share the same `complete(message: str) -> str` interface (duck-typed, no ABC):
