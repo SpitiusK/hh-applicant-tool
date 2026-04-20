@@ -205,7 +205,10 @@ class Operation(BaseOperation):
         # Пути для журналов событий и подтверждений.
         # tool.config_dir — argparse -c (может быть None), tool.config_path —
         # резолвленный путь с CONFIG_DIR env / default.
-        data_dir = tool.config_path / "data"
+        # NB: имя "data" занято SQLite-файлом БД (CONFIG_DIR/data), поэтому
+        # журналы кладём в CONFIG_DIR/journal/, иначе append_event падает с
+        # [Errno 17] File exists при попытке создать папку поверх файла.
+        data_dir = tool.config_path / "journal"
         self.events_jsonl = data_dir / "scheduled_events.jsonl"
         self.agenda_md = data_dir / "agenda.md"
         self.confirmations_jsonl = data_dir / "pending_confirmations.jsonl"
