@@ -435,6 +435,9 @@ class Operation(BaseOperation):
         self._messenger = None  # ленивая инициализация
         self.vacancy_filter_ai = None
         self._resume_analysis_cache: dict[tuple[str | None, str], str] = {}
+        # Счётчик обработанных вакансий (POST или эскалация). Сравнивается с
+        # self.max_responses в начале каждой итерации.
+        self._processed_count = 0
 
         self._apply_vacancies()
 
@@ -857,6 +860,21 @@ class Operation(BaseOperation):
                 self.vacancy_filter_ai.rate_limit = self.args.ai_rate_limit
 
         for vacancy in self._get_vacancies(resume_id=resume["id"]):
+            # max_responses лимит — считает ЛЮБОЕ действие (POST или эскалацию).
+            # Раньше max_responses был декоративным полем (без проверок), это
+            # приводило к спаму в TG при --approval-mode=always.
+            if (
+                self.max_responses
+                and self._processed_count >= self.max_responses
+            ):
+                logger.info(
+                    "Достигнут лимит max_responses=%d — прекращаю обход.",
+                    self.max_responses,
+                )
+                print(
+                    f"🛑 Лимит {self.max_responses} действий достигнут"
+                )
+                break
             try:
                 employer = vacancy.get("employer", {})
 
@@ -1103,6 +1121,7 @@ class Operation(BaseOperation):
                                 ai_response=ai_resp,
                                 approval_cfg=self.approval_cfg,
                             )
+                            self._processed_count += 1
                             logger.info(
                                 "Вакансия эскалирована на approval: %s",
                                 vacancy["alternate_url"],
@@ -1161,6 +1180,7 @@ class Operation(BaseOperation):
                             ai_response=_synthetic_ai,
                             approval_cfg=self.approval_cfg,
                         )
+                        self._processed_count += 1
                         logger.info(
                             "Вакансия эскалирована на approval (template): %s",
                             vacancy["alternate_url"],
@@ -1190,6 +1210,7 @@ class Operation(BaseOperation):
                                 letter=letter,
                             )
                             if result.get("success") == "true":
+                                self._processed_count += 1
                                 print(
                                     "📨 Отправили отклик на вакансию с тестом",
                                     vacancy["alternate_url"],
@@ -1236,6 +1257,7 @@ class Operation(BaseOperation):
                                 delay=random.uniform(1, 3),
                             )
                             assert res == {}
+                            self._processed_count += 1
                             print(
                                 "📨 Отправили отклик на вакансию",
                                 vacancy["alternate_url"],
@@ -1259,6 +1281,7 @@ class Operation(BaseOperation):
                                         delay=random.uniform(1, 3),
                                     )
                                     assert res == {}
+                                    self._processed_count += 1
                                     print(
                                         "📨 Отправили отклик на вакансию после капчи",
                                         vacancy["alternate_url"],
