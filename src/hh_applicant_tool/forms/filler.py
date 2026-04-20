@@ -55,7 +55,15 @@ class FormFiller:
     )
 
     def __post_init__(self) -> None:
-        tool_scope: list[str] = []  # allowed_tools перекрываются подпиской
+        # MCP-инструменты playwright плагина: Claude CLI требует явное
+        # разрешение, иначе filler_agent упирается в "разрешите browser_navigate".
+        # Паттерн `mcp__<plugin>__*` покрывает все browser_* tools.
+        tool_scope: list[str] = [
+            "mcp__playwright__*",
+            # резервный pattern с дефисом — разные версии плагина дают
+            # разный делимитер slug'а (видели оба: `-` и `_`).
+            "mcp__plugin_playwright_playwright__*",
+        ]
         # Filler и submit нуждаются в Playwright. Reviewer — нет.
         plugin_dirs = (
             [self.playwright_plugin_dir]
