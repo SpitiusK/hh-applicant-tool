@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
 
 
 def _build_regeneration_prompt(
-    pm: PendingMessageModel, user_comment: str
+    pm: PendingMessageModel,
+    user_comment: str,
+    persona: str = "",
 ) -> str:
     """Собрать prompt для перегенерации с учётом user-комментария."""
     payload = pm.draft_payload or {}
@@ -45,16 +47,27 @@ def _build_regeneration_prompt(
         "answer"
     ) or ""
 
-    lines = [
-        "Ты помогаешь пересобрать ранее сгенерированный ответ с учётом коррекции от пользователя.",
-        f"Тип действия: {action_type}",
-    ]
+    lines: list[str] = []
+    if persona:
+        lines.append("# PROFESSIONAL PROFILE (контекст для ответов от первого лица)")
+        lines.append("")
+        lines.append(persona.strip())
+        lines.append("")
+    lines.extend(
+        [
+            "Ты помогаешь пересобрать ранее сгенерированный ответ с учётом коррекции от пользователя.",
+            f"Тип действия: {action_type}",
+        ]
+    )
     if context_summary:
         lines.append(f"Контекст: {context_summary}")
     if action_type == "apply_vacancy":
         vn = payload.get("vacancy_name") or ""
         if vn:
             lines.append(f"Вакансия: {vn}")
+        vu = payload.get("vacancy_url") or ""
+        if vu:
+            lines.append(f"Ссылка на вакансию: {vu}")
     elif action_type == "reply_employer":
         vn = payload.get("vacancy_name") or ""
         en = payload.get("employer_name") or ""
@@ -63,7 +76,10 @@ def _build_regeneration_prompt(
 
     lines.append("")
     lines.append("Предыдущий вариант ответа (его нужно улучшить):")
-    lines.append(str(previous_message)[:2000])
+    if previous_message:
+        lines.append(str(previous_message)[:2000])
+    else:
+        lines.append("(пусто — вакансия не требовала сопроводительного, но пользователь хочет добавить)")
     lines.append("")
     lines.append(
         "КОРРЕКЦИЯ ОТ ПОЛЬЗОВАТЕЛЯ:"
@@ -71,9 +87,9 @@ def _build_regeneration_prompt(
     lines.append(user_comment)
     lines.append("")
     lines.append(
-        "Перегенерируй ответ с учётом коррекции. Сохрани тон и "
-        "стиль. Верни только новый текст ответа (plain text) в "
-        "поле answer."
+        "Перегенерируй ответ с учётом коррекции и professional profile. "
+        "Пиши от первого лица, без AI-tells. Сохрани тон и стиль. "
+        "Верни только новый текст ответа (plain text) в поле answer."
     )
     return "\n".join(lines)
 
@@ -143,9 +159,17 @@ def handle_modify(
             "reason": "max_iter",
         }
 
-    # Перегенерация
+    # Перегенерация — подмешиваем persona, чтобы AI знал, кто он
+    # (без неё regen в вакууме: только vacancy_name и предыдущий draft).
+    from ..ai.context import get_persona_context
+    from pathlib import Path
+    persona_cfg = (config.get("persona") or {})
+    config_dir = persona_cfg.get("source_reports_dir") or "/app/config"
+    # Если у persona есть свой path — get_persona_context его использует
+    persona_text = get_persona_context(config, Path(config_dir))
+
     ai_client = _get_ai_client(config, pm.action_type)
-    prompt = _build_regeneration_prompt(pm, user_comment)
+    prompt = _build_regeneration_prompt(pm, user_comment, persona=persona_text)
     ai_resp = generate_with_self_assessment(ai_client, prompt)
 
     new_answer = (
