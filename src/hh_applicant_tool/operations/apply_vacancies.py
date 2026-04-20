@@ -20,7 +20,7 @@ import requests
 from .. import utils
 from ..ai.base import AIError
 from ..ai.context import get_persona_context
-from ..ai.schema import TestSolution
+from ..ai.schema import AIResponse, TestSolution
 from ..api import BadResponse, Redirect, datatypes
 from ..approval import (
     escalate_to_user,
@@ -1130,6 +1130,46 @@ class Operation(BaseOperation):
                         )
 
                     logger.debug(letter)
+
+                # Approval-check для template-path (без AI-генерации):
+                # AI-ветка уже прошла should_escalate выше. Template-path
+                # должен пройти его здесь, иначе --approval-mode=always
+                # не защитит путь без use_ai (баг: до этой правки всё
+                # автономно летело в POST /negotiations, игнорируя config).
+                if not self.cover_letter_ai:
+                    _synthetic_ai = AIResponse(
+                        answer=letter,
+                        confidence=0.95,
+                        escalate=False,
+                    )
+                    if should_escalate(
+                        _synthetic_ai, "apply_vacancy", self.approval_cfg
+                    ):
+                        _draft_payload = {
+                            "resume_id": resume["id"],
+                            "vacancy_id": vacancy_id,
+                            "message": letter,
+                            "vacancy_url": vacancy.get("alternate_url"),
+                            "vacancy_name": vacancy.get("name"),
+                            "has_test": bool(vacancy.get("has_test")),
+                        }
+                        escalate_to_user(
+                            self.tool.storage,
+                            self._get_messenger(),
+                            action_type="apply_vacancy",
+                            draft_payload=_draft_payload,
+                            ai_response=_synthetic_ai,
+                            approval_cfg=self.approval_cfg,
+                        )
+                        logger.info(
+                            "Вакансия эскалирована на approval (template): %s",
+                            vacancy["alternate_url"],
+                        )
+                        print(
+                            "⏸️ Эскалировано пользователю",
+                            vacancy["alternate_url"],
+                        )
+                        continue
 
                 logger.debug(
                     "Пробуем откликнуться на вакансию: %s",
