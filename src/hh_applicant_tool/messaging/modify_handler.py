@@ -65,9 +65,32 @@ def _build_regeneration_prompt(
         vn = payload.get("vacancy_name") or ""
         if vn:
             lines.append(f"Вакансия: {vn}")
+        en = payload.get("employer_name") or ""
+        if en:
+            lines.append(f"Работодатель: {en}")
         vu = payload.get("vacancy_url") or ""
         if vu:
             lines.append(f"Ссылка на вакансию: {vu}")
+        sf, st, sc = (
+            payload.get("salary_from"),
+            payload.get("salary_to"),
+            payload.get("salary_currency"),
+        )
+        if sf or st:
+            lines.append(
+                f"Зарплата: {sf or '?'}–{st or '?'} {sc or ''}".strip()
+            )
+        exp = payload.get("experience")
+        if exp:
+            lines.append(f"Требуемый опыт: {exp}")
+        sch = payload.get("schedule")
+        if sch:
+            lines.append(f"График: {sch}")
+        vd = payload.get("vacancy_description") or ""
+        if vd:
+            lines.append("")
+            lines.append("Описание вакансии (с hh.ru):")
+            lines.append(vd[:6000])
     elif action_type == "reply_employer":
         vn = payload.get("vacancy_name") or ""
         en = payload.get("employer_name") or ""

@@ -1106,12 +1106,30 @@ class Operation(BaseOperation):
                         if should_escalate(
                             ai_resp, "apply_vacancy", self.approval_cfg
                         ):
+                            _full_desc_ai = ""
+                            try:
+                                _full_desc_ai = self._fetch_full_description(vacancy)
+                            except Exception as ex:
+                                logger.warning(
+                                    "не удалось подтянуть описание вакансии %s: %s",
+                                    vacancy.get("alternate_url"),
+                                    ex,
+                                )
+                            _emp_ai = vacancy.get("employer") or {}
+                            _sal_ai = vacancy.get("salary") or {}
                             draft_payload = {
                                 "resume_id": resume["id"],
                                 "vacancy_id": vacancy_id,
                                 "message": letter,
                                 "vacancy_url": vacancy.get("alternate_url"),
                                 "vacancy_name": vacancy.get("name"),
+                                "vacancy_description": _full_desc_ai[:8000],
+                                "employer_name": _emp_ai.get("name"),
+                                "salary_from": _sal_ai.get("from"),
+                                "salary_to": _sal_ai.get("to"),
+                                "salary_currency": _sal_ai.get("currency"),
+                                "experience": (vacancy.get("experience") or {}).get("name"),
+                                "schedule": (vacancy.get("schedule") or {}).get("name"),
                             }
                             escalate_to_user(
                                 self.tool.storage,
@@ -1164,6 +1182,20 @@ class Operation(BaseOperation):
                     if should_escalate(
                         _synthetic_ai, "apply_vacancy", self.approval_cfg
                     ):
+                        # Подтянуть полное описание вакансии для будущей
+                        # modify-итерации — иначе AI на regen не видит
+                        # требований и просит "пришли текст вакансии".
+                        _full_desc = ""
+                        try:
+                            _full_desc = self._fetch_full_description(vacancy)
+                        except Exception as ex:
+                            logger.warning(
+                                "не удалось подтянуть описание вакансии %s: %s",
+                                vacancy.get("alternate_url"),
+                                ex,
+                            )
+                        _employer = vacancy.get("employer") or {}
+                        _salary = vacancy.get("salary") or {}
                         _draft_payload = {
                             "resume_id": resume["id"],
                             "vacancy_id": vacancy_id,
@@ -1171,6 +1203,13 @@ class Operation(BaseOperation):
                             "vacancy_url": vacancy.get("alternate_url"),
                             "vacancy_name": vacancy.get("name"),
                             "has_test": bool(vacancy.get("has_test")),
+                            "vacancy_description": _full_desc[:8000],
+                            "employer_name": _employer.get("name"),
+                            "salary_from": _salary.get("from"),
+                            "salary_to": _salary.get("to"),
+                            "salary_currency": _salary.get("currency"),
+                            "experience": (vacancy.get("experience") or {}).get("name"),
+                            "schedule": (vacancy.get("schedule") or {}).get("name"),
                         }
                         escalate_to_user(
                             self.tool.storage,
